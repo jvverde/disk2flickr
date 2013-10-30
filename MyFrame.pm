@@ -132,6 +132,7 @@ use strict;
 use Data::Dumper;
 use Carp;
 
+######Manual generated functions#########################
 
 sub __showMainPanel{
 	my ($self) = @_;
@@ -143,7 +144,6 @@ sub __hideMainPanel{
 	my ($self) = @_;
 	$self->{mainPanel}->Show(0);
 }
-
 sub __showLoginPanel{
     my ($self) = @_;
 	$self-> __hideMainPanel();
@@ -156,7 +156,6 @@ sub __hideLoginPanel{
 	my ($self) = @_;
 	$self->{loginPanel}->Show(0);
 }
-
 sub __showCheckTokenPanel{
 	my ($self) = @_;
 	$self->__hideAskAuthPanel();
@@ -183,6 +182,7 @@ sub __setStatus{
 	$self->SetStatusText('User ' .  ($db->{user}->{fullname} || $db->{user}->{username}),0);
 }
 
+######end of manual generated functions#########################
 
 sub new {
     my( $self, $parent, $id, $title, $pos, $size, $style, $name ) = @_;
@@ -274,6 +274,12 @@ sub new {
 		$self->__showMainPanel();
 		$self->__setStatus();
 		$flickr->{user} = $db->{user};
+		my $p = 0;
+		if (defined $db->{localfolders}){
+			foreach (keys $db->{localfolders}->{$db->{user}->{nsid}}){
+						$self->{foldersList}->InsertStringItem($p++,$_);
+			}
+		}
 	}else{
 		$self->__showLoginPanel();
 		$self->SetStatusText('The user is not yet authorized',0);
@@ -389,175 +395,203 @@ sub __do_layout {
 # end wxGlade
 }
 
+
+sub do_login {
+	my ($self, $event) = @_;
+	$self->__showLoginPanel();
+  $event->Skip;
+# wxGlade: MyFrame::do_login <event_handler>
+
+	warn "Event handler (do_login) not implemented";
+	$event->Skip;
+
+# end wxGlade
+}
+
+
 sub do_logout {
-    my ($self, $event) = @_;
+	my ($self, $event) = @_;
 	$removeUser->();
 	$self->__showLoginPanel();
 	$self->SetStatusText('The user is not authorized anymore',0);
-    # wxGlade: MyFrame::do_logout <event_handler>
-    warn "Event handler (do_logout) not implemented";
-    $event->Skip;
-    # end wxGlade
+	return $event->Skip;
+# wxGlade: MyFrame::do_logout <event_handler>
+
+	warn "Event handler (do_logout) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub do_exit {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::do_exit <event_handler>
-    warn "Event handler (do_exit) not implemented";
-    $event->Skip;
-    # end wxGlade
-}
-
-
-our $lastDirectory = "";
-sub do_browse {
-    my ($self, $event) = @_;
-	$\ = "\n";
-	#my $dgl = Wx::DirDialog->new($self->{backupSubPanel}, "Chosse a folder to upload", $defaultPath, $style, -1, -1, "");
-	my $dlg = Wx::DirDialog->new($self->{backupSubPanel}, "Please, choose a folder to upload",$lastDirectory);
-	if ($dlg->ShowModal == wxID_OK){
-		$lastDirectory = $dlg->GetPath();
-		print $lastDirectory;
-		my $p = $self->{foldersList}->GetItemCount;
-		print "p=$p";
-		$self->{foldersList}->InsertStringItem($p,$lastDirectory)
-	}
+	my ($self, $event) = @_;
+	$self->Close;
+	return $event->Skip;
+# wxGlade: MyFrame::do_exit <event_handler>
+	warn "Event handler (do_exit) not implemented";
 	$event->Skip;
-	return;
-	# wxGlade: MyFrame::do_browse <event_handler>
-    warn "Event handler (do_browse) not implemented";
-    $event->Skip;
-    # end wxGlade
-}
 
-
-sub on_addDir {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::on_addDir <event_handler>
-    warn "Event handler (on_addDir) not implemented";
-    $event->Skip;
-    # end wxGlade
+# end wxGlade
 }
 
 
 sub on_begin {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::on_begin <event_handler>
-    warn "Event handler (on_begin) not implemented";
-    $event->Skip;
-    # end wxGlade
+	my ($self, $event) = @_;
+# wxGlade: MyFrame::on_begin <event_handler>
+
+	warn "Event handler (on_begin) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub on_delete {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::on_delete <event_handler>
-    warn "Event handler (on_delete) not implemented";
-    $event->Skip;
-    # end wxGlade
+	my ($self, $event) = @_;
+# wxGlade: MyFrame::on_delete <event_handler>
+
+	warn "Event handler (on_delete) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub on_selected {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::on_selected <event_handler>
-    warn "Event handler (on_selected) not implemented";
-    $event->Skip;
-    # end wxGlade
+	my ($self, $event) = @_;
+# wxGlade: MyFrame::on_selected <event_handler>
+
+	warn "Event handler (on_selected) not implemented";
+	$event->Skip;
+
+# end wxGlade
+}
+
+my $lastDirectory = "";
+sub do_browse {
+	my ($self, $event) = @_;
+	my $dlg = Wx::DirDialog->new(
+	  $self->{backupSubPanel},
+	  "Please, choose a folder to backup",
+	  $lastDirectory,
+	  wxDD_CHANGE_DIR|wxDD_DIR_MUST_EXIST
+	);
+	if ($dlg->ShowModal == wxID_OK){
+		$lastDirectory = $dlg->GetPath();
+		my $p = $self->{foldersList}->GetItemCount;
+		$self->{foldersList}->InsertStringItem($p,$lastDirectory);
+		$db->{localfolders}->{$db->{user}->{nsid}}->{$lastDirectory} = time
+			if defined $db->{user} and defined $db->{user}->{nsid};
+	}
+	return $event->Skip;
+# wxGlade: MyFrame::do_browse <event_handler>
+
+	warn "Event handler (do_browse) not implemented";
+	$event->Skip;
+
+# end wxGlade
+}
+
+
+sub do_remove_selected {
+	my ($self, $event) = @_;
+# wxGlade: MyFrame::do_remove_selected <event_handler>
+
+	warn "Event handler (do_remove_selected) not implemented";
+	$event->Skip;
+
+# end wxGlade
+}
+
+
+sub do_remove_all {
+	my ($self, $event) = @_;
+	my $p = $self->{foldersList}->GetItemCount;
+
+# wxGlade: MyFrame::do_remove_all <event_handler>
+
+	warn "Event handler (do_remove_all) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub do_backup {
-    my ($self, $event) = @_;
+	my ($self, $event) = @_;
 	my $count = $self->{foldersList}->GetItemCount;
 	my $i = 0;
 	while($i < $count){
 		print $self->{foldersList}->GetItemText($i);
 		$getFolder->($self->{foldersList}->GetItemText($i++));
 	}
-    # wxGlade: MyFrame::do_backup <event_handler>
-    warn "Event handler (do_backup) not implemented";
-    $event->Skip;
-    # end wxGlade
+	return $event->Skip;
+# wxGlade: MyFrame::do_backup <event_handler>
+
+	warn "Event handler (do_backup) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub do_close {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::do_close <event_handler>
-    warn "Event handler (do_close) not implemented";
-    $event->Skip;
-    # end wxGlade
+	my ($self, $event) = @_;
+	$self->Close;
+	return $event->Skip;
+# wxGlade: MyFrame::do_close <event_handler>
+
+	warn "Event handler (do_close) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub go_main {
-    my ($self, $event) = @_;
-	return $self->__showMainPanel();
-    # wxGlade: MyFrame::go_main <event_handler>
-    warn "Event handler (go_main) not implemented";
-    $event->Skip;
-    # end wxGlade
+	my ($self, $event) = @_;
+	$self->__showMainPanel();
+	return $event->Skip;
+# wxGlade: MyFrame::go_main <event_handler>
+
+	warn "Event handler (go_main) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
+
 sub go_askAuth {
-    my ($self, $event) = @_;
+	my ($self, $event) = @_;
 	$flickr->askAuth() or carp q|ask auth error| and return undef;
 	$self->__showCheckTokenPanel();
-    $event->Skip;
-	return;
-    # wxGlade: MyFrame::go_askAuth <event_handler>
-    warn "Event handler (go_askAuth) not implemented";
-    $event->Skip;
-    # end wxGlade
+  return  $event->Skip;
+# wxGlade: MyFrame::go_askAuth <event_handler>
+
+	warn "Event handler (go_askAuth) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
 
 
 sub go_getToken {
-    my ($self, $event) = @_;
+	my ($self, $event) = @_;
 	print 'Get token...';
 	$flickr->getToken() or return $self-> __showAskAuthPanel();
 	$self->__showMainPanel();
 	$db->{user}= $flickr->{user};
 	$self->__setStatus();
 	$syncDB->();
-	#print Dumper $self->{flickr};
-	return;
-    # wxGlade: MyFrame::go_getToken <event_handler>
-    warn "Event handler (go_getToken) not implemented";
-    $event->Skip;
-    # end wxGlade
+	return $event->Skip;
+# wxGlade: MyFrame::go_getToken <event_handler>
+
+	warn "Event handler (go_getToken) not implemented";
+	$event->Skip;
+
+# end wxGlade
 }
-
-sub do_remove_selected {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::do_remove_selected <event_handler>
-    warn "Event handler (do_remove_selected) not implemented";
-    $event->Skip;
-    # end wxGlade
-}
-
-
-sub do_remove_all {
-    my ($self, $event) = @_;
-    # wxGlade: MyFrame::do_remove_all <event_handler>
-    warn "Event handler (do_remove_all) not implemented";
-    $event->Skip;
-    # end wxGlade
-}
-
-sub do_login {
-    my ($self, $event) = @_;
-	$self->__showLoginPanel();
-    $event->Skip;
-	return;
-    # wxGlade: MyFrame::do_login <event_handler>
-    warn "Event handler (do_login) not implemented";
-    $event->Skip;
-    # end wxGlade
-}
-
 
 # end of class MyFrame
 
