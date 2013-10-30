@@ -195,7 +195,7 @@ sub new {
 
 # begin wxGlade: MyFrame::new
 
-	$style = wxDEFAULT_FRAME_STYLE 
+	$style = wxDEFAULT_FRAME_STYLE
 		unless defined $style;
 
 	$self = $self->SUPER::new( $parent, $id, $title, $pos, $size, $style, $name );
@@ -214,7 +214,7 @@ sub new {
 	$self->{askAuthInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{askAuthInfoSubPanel}, -1, "Step 1: Get Authorization" );
 	$self->{getTokenInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{getTokenInfoSubPanel}, -1, "Step 2: Check" );
 	$self->{foldersListPanel} = Wx::ScrolledWindow->new($self->{backupSubPanel}, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-	
+
 
 	# Menu Bar
 
@@ -227,11 +227,11 @@ sub new {
 	$self->{Exit} = $self->{File}->Append(Wx::NewId(), "Exit", "");
 	$self->{mainMenu}->Append($self->{File}, "File");
 	$self->SetMenuBar($self->{mainMenu});
-	
+
 # Menu Bar end
 
 	$self->{mainStatusBar} = $self->CreateStatusBar(2, 0);
-	$self->{foldersList} = Wx::ListCtrl->new($self->{foldersListPanel}, -1, wxDefaultPosition, wxDefaultSize, wxLC_LIST|wxSUNKEN_BORDER);
+	$self->{foldersList} = Wx::ListView->new($self->{foldersListPanel}, -1, wxDefaultPosition, wxDefaultSize, wxLC_LIST|wxSUNKEN_BORDER);
 	$self->{browseDirNameButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Add a new folder");
 	$self->{RemoveButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Remove selected folders");
 	$self->{clearAllButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Clear all");
@@ -253,9 +253,9 @@ sub new {
 	$self->__set_properties();
 	$self->__do_layout();
 
-	Wx::Event::EVT_MENU($self, Login, \&do_login);
-	Wx::Event::EVT_MENU($self, Logout, \&do_logout);
-	Wx::Event::EVT_MENU($self, Exit, \&do_exit);
+	Wx::Event::EVT_MENU($self, $self->{Login}->GetId, \&do_login);
+	Wx::Event::EVT_MENU($self, $self->{Logout}->GetId, \&do_logout);
+	Wx::Event::EVT_MENU($self, $self->{Exit}->GetId, \&do_exit);
 	Wx::Event::EVT_LIST_BEGIN_DRAG($self, $self->{foldersList}->GetId, \&on_begin);
 	Wx::Event::EVT_LIST_DELETE_ITEM($self, $self->{foldersList}->GetId, \&on_delete);
 	Wx::Event::EVT_LIST_ITEM_SELECTED($self, $self->{foldersList}->GetId, \&on_selected);
@@ -283,8 +283,10 @@ sub new {
 		$self->__setStatus();
 		$flickr->{user} = $db->{user};
 		my $p = 0;
-		if (defined $db->{localfolders}){
-			foreach (keys $db->{localfolders}->{$db->{user}->{nsid}}){
+		if (defined $db->{localfolders}
+		    and defined $db->{localfolders}->{$db->{user}->{nsid}}
+		  ){
+			foreach (sort keys $db->{localfolders}->{$db->{user}->{nsid}}){
 						$self->{foldersList}->InsertStringItem($p++,$_);
 			}
 		}
@@ -305,14 +307,14 @@ sub __set_properties {
 	$self->SetTitle("Disk2Flickr");
 	$self->SetSize(Wx::Size->new(550, 380));
 	$self->{mainStatusBar}->SetStatusWidths(-1,0);
-	
+
 	my( @mainStatusBar_fields ) = (
 		"User Status",
 		""
 	);
 
 	if( @mainStatusBar_fields ) {
-		$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_) 	
+		$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_)
 		for 0 .. $#mainStatusBar_fields ;
 	}
 	$self->{foldersListPanel}->SetScrollRate(10, 10);
@@ -507,8 +509,24 @@ sub do_browse {
 
 sub do_remove_selected {
 	my ($self, $event) = @_;
-# wxGlade: MyFrame::do_remove_selected <event_handler>
+	my $removeFromDB = sub{
+		return sub{} unless defined $db->{localfolders}
+			and defined $db->{localfolders}->{$db->{user}->{nsid}};
+		my $foldersInDB = $db->{localfolders}->{$db->{user}->{nsid}};
+		return sub{
+			delete $foldersInDB->{$self->{foldersList}->GetItemText(shift)}
+		}
+	}->();
+	my $p = $self->{foldersList}->GetFirstSelected;
+	$removeFromDB->($p);
+	$self->{foldersList}->DeleteItem($p);
+	while(($p = $self->{foldersList}->GetNextSelected($p)) >= 0){
+			$removeFromDB->($p);
+			$self->{foldersList}->DeleteItem($p)
+	}
 
+
+# wxGlade: MyFrame::do_remove_selected <event_handler>
 	warn "Event handler (do_remove_selected) not implemented";
 	$event->Skip;
 
@@ -518,7 +536,10 @@ sub do_remove_selected {
 
 sub do_remove_all {
 	my ($self, $event) = @_;
-	my $p = $self->{foldersList}->GetItemCount;
+	$self->{foldersList}->ClearAll;
+	delete $db->{localfolders}->{$db->{user}->{nsid}}
+		if defined $db->{user} and defined $db->{user}->{nsid};
+	return $event->Skip;
 
 # wxGlade: MyFrame::do_remove_all <event_handler>
 
