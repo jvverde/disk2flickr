@@ -195,7 +195,7 @@ sub new {
 
 # begin wxGlade: MyFrame::new
 
-	$style = wxDEFAULT_FRAME_STYLE
+	$style = wxDEFAULT_FRAME_STYLE 
 		unless defined $style;
 
 	$self = $self->SUPER::new( $parent, $id, $title, $pos, $size, $style, $name );
@@ -203,7 +203,7 @@ sub new {
 	$self->{getTokenPanel} = Wx::Panel->new($self->{loginPanel}, -1, wxDefaultPosition, wxDefaultSize, );
 	$self->{getTokenInfoSubPanel} = Wx::Panel->new($self->{getTokenPanel}, -1, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
 	$self->{askAuthPanel} = Wx::Panel->new($self->{loginPanel}, -1, wxDefaultPosition, wxDefaultSize, );
-	$self->{askAuthInfoSubPanel} = Wx::Panel->new($self->{askAuthPanel}, -1, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
+	$self->{askAuthInfoSubPanel} = Wx::ScrolledWindow->new($self->{askAuthPanel}, -1, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
 	$self->{mainPanel} = Wx::ScrolledWindow->new($self, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
 	$self->{backupNotebook} = Wx::Notebook->new($self->{mainPanel}, -1, wxDefaultPosition, wxDefaultSize, 0);
 	$self->{backupPanel} = Wx::Panel->new($self->{backupNotebook}, -1, wxDefaultPosition, wxDefaultSize, );
@@ -214,7 +214,7 @@ sub new {
 	$self->{askAuthInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{askAuthInfoSubPanel}, -1, "Step 1: Get Authorization" );
 	$self->{getTokenInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{getTokenInfoSubPanel}, -1, "Step 2: Check" );
 	$self->{foldersListPanel} = Wx::ScrolledWindow->new($self->{backupSubPanel}, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-
+	
 
 	# Menu Bar
 
@@ -227,7 +227,7 @@ sub new {
 	$self->{Exit} = $self->{File}->Append(Wx::NewId(), "Exit", "");
 	$self->{mainMenu}->Append($self->{File}, "File");
 	$self->SetMenuBar($self->{mainMenu});
-
+	
 # Menu Bar end
 
 	$self->{mainStatusBar} = $self->CreateStatusBar(2, 0);
@@ -253,9 +253,9 @@ sub new {
 	$self->__set_properties();
 	$self->__do_layout();
 
-	Wx::Event::EVT_MENU($self, $self->{Login}->GetId, \&do_login);
-	Wx::Event::EVT_MENU($self, $self->{Logout}->GetId, \&do_logout);
-	Wx::Event::EVT_MENU($self, $self->{Exit}->GetId, \&do_exit);
+	Wx::Event::EVT_MENU($self, Login, \&do_login);
+	Wx::Event::EVT_MENU($self, Logout, \&do_logout);
+	Wx::Event::EVT_MENU($self, Exit, \&do_exit);
 	Wx::Event::EVT_LIST_BEGIN_DRAG($self, $self->{foldersList}->GetId, \&on_begin);
 	Wx::Event::EVT_LIST_DELETE_ITEM($self, $self->{foldersList}->GetId, \&on_delete);
 	Wx::Event::EVT_LIST_ITEM_SELECTED($self, $self->{foldersList}->GetId, \&on_selected);
@@ -270,6 +270,14 @@ sub new {
 	Wx::Event::EVT_BUTTON($self, $self->{nextTokenButton}->GetId, \&go_getToken);
 
 # end wxGlade
+
+	Wx::Event::EVT_CLOSE($self,sub{
+			my ($self, $event) = @_;
+			$syncDB->();
+			print "Goodby";
+			$event->Skip;
+	});
+
 	if(defined $db->{user} and $db->{user}->{auth_token}){
 		$self->__showMainPanel();
 		$self->__setStatus();
@@ -295,21 +303,22 @@ sub __set_properties {
 # begin wxGlade: MyFrame::__set_properties
 
 	$self->SetTitle("Disk2Flickr");
-	$self->SetSize(Wx::Size->new(550, 340));
+	$self->SetSize(Wx::Size->new(550, 380));
 	$self->{mainStatusBar}->SetStatusWidths(-1,0);
-
+	
 	my( @mainStatusBar_fields ) = (
 		"User Status",
 		""
 	);
 
 	if( @mainStatusBar_fields ) {
-		$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_)
+		$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_) 	
 		for 0 .. $#mainStatusBar_fields ;
 	}
 	$self->{foldersListPanel}->SetScrollRate(10, 10);
 	$self->{backupRecursiveOptionSomeChoiceName}->SetSelection(-1);
 	$self->{mainPanel}->SetScrollRate(10, 10);
+	$self->{askAuthInfoSubPanel}->SetScrollRate(10, 10);
 	$self->{loginPanel}->Show(0);
 	$self->{loginPanel}->SetScrollRate(10, 10);
 
@@ -412,6 +421,7 @@ sub do_login {
 sub do_logout {
 	my ($self, $event) = @_;
 	$removeUser->();
+	$syncDB->();
 	$self->__showLoginPanel();
 	$self->SetStatusText('The user is not authorized anymore',0);
 	return $event->Skip;
@@ -426,6 +436,7 @@ sub do_logout {
 
 sub do_exit {
 	my ($self, $event) = @_;
+	$syncDB->();
 	$self->Close;
 	return $event->Skip;
 # wxGlade: MyFrame::do_exit <event_handler>
@@ -538,6 +549,7 @@ sub do_backup {
 
 sub do_close {
 	my ($self, $event) = @_;
+	$syncDB->();
 	$self->Close;
 	return $event->Skip;
 # wxGlade: MyFrame::do_close <event_handler>
