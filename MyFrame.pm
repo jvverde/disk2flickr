@@ -55,7 +55,7 @@ sub __upload{
 		);
 		pop @localtags; #discard filename from dir:step tags
 
-		my $photoid = $flickr->upload($file,@tags, @localtags) 
+		my $photoid = $flickr->upload($file,@tags, @localtags)
 			or warn "Failed to upload $file" and return;
 		print "File $file uploaded to flickr (photoid = $photoid)";
 		$db->{ids}->{$id} = $photoid;
@@ -75,7 +75,7 @@ sub __getFileID{
 	return $sha->hexdigest;
 }
 
-sub __getFolder{
+sub getFolder{
 	my $dir = shift;
 	exit if $stop;
 	print qq|Get dir $dir|;
@@ -86,7 +86,7 @@ sub __getFolder{
 	__getSubFolders($dir);
 }
 
-my $getFolder = \&__getFolder;
+my $getFolder = \&getFolder;
 
 sub __getSubFolders{
 	my $dir = shift;
@@ -94,7 +94,7 @@ sub __getSubFolders{
 	my @subdirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
 	closedir DIR;
 	foreach my $subdir (@subdirs){
-		__getFolder(qq|$dir/$subdir|);
+		getFolder(qq|$dir/$subdir|);
 	}
 }
 
@@ -161,7 +161,7 @@ sub __showCheckTokenPanel{
 	my ($self) = @_;
 	$self->__hideAskAuthPanel();
 	$self->{getTokenPanel}->Show(1);
-	$self->{getTokenPanel}->GetParent()->GetSizer()->Layout();	
+	$self->{getTokenPanel}->GetParent()->GetSizer()->Layout();
 }
 sub __hideCheckTokenPanel{
 	my ($self) = @_;
@@ -171,7 +171,7 @@ sub  __showAskAuthPanel{
 	my ($self) = @_;
 	$self->__hideCheckTokenPanel();
 	$self->{askAuthPanel}->Show(1);
-	$self->{askAuthPanel}->GetParent()->GetSizer()->Layout();	
+	$self->{askAuthPanel}->GetParent()->GetSizer()->Layout();
 }
 sub  __hideAskAuthPanel{
 	my ($self) = @_;
@@ -193,82 +193,83 @@ sub new {
     $size   = wxDefaultSize      unless defined $size;
     $name   = ""                 unless defined $name;
 
-    # begin wxGlade: MyFrame::new
-    $style = wxDEFAULT_FRAME_STYLE 
-        unless defined $style;
+# begin wxGlade: MyFrame::new
 
-    $self = $self->SUPER::new( $parent, $id, $title, $pos, $size, $style, $name );
-    
+	$style = wxDEFAULT_FRAME_STYLE
+		unless defined $style;
 
-    # Menu Bar
+	$self = $self->SUPER::new( $parent, $id, $title, $pos, $size, $style, $name );
+	$self->{loginPanel} = Wx::ScrolledWindow->new($self, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
+	$self->{getTokenPanel} = Wx::Panel->new($self->{loginPanel}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{getTokenInfoSubPanel} = Wx::Panel->new($self->{getTokenPanel}, -1, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
+	$self->{askAuthPanel} = Wx::Panel->new($self->{loginPanel}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{askAuthInfoSubPanel} = Wx::Panel->new($self->{askAuthPanel}, -1, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
+	$self->{mainPanel} = Wx::ScrolledWindow->new($self, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
+	$self->{backupNotebook} = Wx::Notebook->new($self->{mainPanel}, -1, wxDefaultPosition, wxDefaultSize, 0);
+	$self->{backupPanel} = Wx::Panel->new($self->{backupNotebook}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{backupSubPanel} = Wx::Panel->new($self->{backupPanel}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{backupRecursiveOptionsPanel} = Wx::Panel->new($self->{backupSubPanel}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{backupRecursiveOptionsSizer_staticbox} = Wx::StaticBox->new($self->{backupRecursiveOptionsPanel}, -1, "Include subfolders" );
+	$self->{backupSubSizer_staticbox} = Wx::StaticBox->new($self->{backupSubPanel}, -1, "Select folders to backup" );
+	$self->{askAuthInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{askAuthInfoSubPanel}, -1, "Step 1: Get Authorization" );
+	$self->{getTokenInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{getTokenInfoSubPanel}, -1, "Step 2: Check" );
+	$self->{foldersListPanel} = Wx::ScrolledWindow->new($self->{backupSubPanel}, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
 
-    $self->{mainMenu} = Wx::MenuBar->new();
-    my $wxglade_tmp_menu;
-    $self->{File} = Wx::Menu->new();
-    $self->{Login} = $self->{File}->Append(wxID_ANY, "Login", "");
-    $self->{Logout} = $self->{File}->Append(wxID_ANY, "Logout", "");
-    $self->{File}->AppendSeparator();
-    $self->{Exit} = $self->{File}->Append(wxID_ANY, "Exit", "");
-    $self->{mainMenu}->Append($self->{File}, "File");
-    $self->SetMenuBar($self->{mainMenu});
-    
+
+	# Menu Bar
+
+	$self->{mainMenu} = Wx::MenuBar->new();
+	my $wxglade_tmp_menu;
+	$self->{File} = Wx::Menu->new();
+	$self->{Login} = $self->{File}->Append(Wx::NewId(), "Login", "");
+	$self->{Logout} = $self->{File}->Append(Wx::NewId(), "Logout", "");
+	$self->{File}->AppendSeparator();
+	$self->{Exit} = $self->{File}->Append(Wx::NewId(), "Exit", "");
+	$self->{mainMenu}->Append($self->{File}, "File");
+	$self->SetMenuBar($self->{mainMenu});
+
 # Menu Bar end
 
-    $self->{mainStatusBar} = $self->CreateStatusBar(2, 0);
-    $self->{mainPanel} = Wx::ScrolledWindow->new($self, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-    $self->{backupNotebook} = Wx::Notebook->new($self->{mainPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0);
-    $self->{backupPanel} = Wx::Panel->new($self->{backupNotebook}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{backupSubPanel} = Wx::Panel->new($self->{backupPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{foldersListPanel} = Wx::ScrolledWindow->new($self->{backupSubPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-    $self->{foldersList} = Wx::ListCtrl->new($self->{foldersListPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLC_LIST|wxSUNKEN_BORDER);
-    $self->{browseDirNameButton} = Wx::Button->new($self->{backupSubPanel}, wxID_ANY, "Add a new folder");
-    $self->{RemoveButton} = Wx::Button->new($self->{backupSubPanel}, wxID_ANY, "Remove selected folders");
-    $self->{clearAllButton} = Wx::Button->new($self->{backupSubPanel}, wxID_ANY, "Clear all");
-    $self->{backupRecursiveOptionsPanel} = Wx::Panel->new($self->{backupSubPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{backupRecursiveOptionAll} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "All", wxDefaultPosition, wxDefaultSize, wxRB_GROUP|wxRB_USE_CHECKBOX);
-    $self->{backupRecursiveOptionSome} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "Only if folder name ", wxDefaultPosition, wxDefaultSize, wxRB_USE_CHECKBOX);
-    $self->{backupRecursiveOptionSomeChoiceName} = Wx::ComboBox->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, ["is equal to", "constains", "start with", "end with"], wxCB_DROPDOWN|wxCB_DROPDOWN);
-    $self->{backupRecursiveOptionSomeChoiceValue} = Wx::TextCtrl->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, );
-    $self->{backupRecursiveOptionNone} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "None (only files)", wxDefaultPosition, wxDefaultSize, wxRB_USE_CHECKBOX);
-    $self->{backupRecursiveOptionsSizer_staticbox} = Wx::StaticBox->new($self->{backupRecursiveOptionsPanel}, wxID_ANY, "Include subfolders" );
-    $self->{backupSubSizer_staticbox} = Wx::StaticBox->new($self->{backupSubPanel}, wxID_ANY, "Select folders to backup" );
-    $self->{start_button} = Wx::Button->new($self->{backupPanel}, wxID_ANY, "Start");
-    $self->{Close_button} = Wx::Button->new($self->{backupPanel}, wxID_ANY, "Close");
-    $self->{notebook_4_pane_2} = Wx::Panel->new($self->{backupNotebook}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{loginPanel} = Wx::ScrolledWindow->new($self, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-    $self->{askAuthPanel} = Wx::Panel->new($self->{loginPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{askAuthInfoSubPanel} = Wx::Panel->new($self->{askAuthPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
-    $self->{askAuthInfoLabel} = Wx::StaticText->new($self->{askAuthInfoSubPanel}, wxID_ANY, "Go to your browser and give me permissions to acess to your acount", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
-    $self->{askAuthInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{askAuthInfoSubPanel}, wxID_ANY, "Step 1: Get Authorization" );
-    $self->{cancelAuthButton} = Wx::Button->new($self->{askAuthPanel}, wxID_ANY, "Cancel");
-    $self->{nextAuthButton} = Wx::Button->new($self->{askAuthPanel}, wxID_ANY, "Get Auth...");
-    $self->{getTokenPanel} = Wx::Panel->new($self->{loginPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, );
-    $self->{getTokenInfoSubPanel} = Wx::Panel->new($self->{getTokenPanel}, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxDOUBLE_BORDER|wxTAB_TRAVERSAL);
-    $self->{getTokenInfoLabel} = Wx::StaticText->new($self->{getTokenInfoSubPanel}, wxID_ANY, "Check the autorization. \n(Don't if you haven't give autorization in the browser)", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
-    $self->{getTokenInfoSubHSizer_staticbox} = Wx::StaticBox->new($self->{getTokenInfoSubPanel}, wxID_ANY, "Step 2: Check" );
-    $self->{cancelTokenButton} = Wx::Button->new($self->{getTokenPanel}, wxID_ANY, "Cancel");
-    $self->{nextTokenButton} = Wx::Button->new($self->{getTokenPanel}, wxID_ANY, "Check...");
+	$self->{mainStatusBar} = $self->CreateStatusBar(2, 0);
+	$self->{foldersList} = Wx::ListCtrl->new($self->{foldersListPanel}, -1, wxDefaultPosition, wxDefaultSize, wxLC_LIST|wxSUNKEN_BORDER);
+	$self->{browseDirNameButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Add a new folder");
+	$self->{RemoveButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Remove selected folders");
+	$self->{clearAllButton} = Wx::Button->new($self->{backupSubPanel}, -1, "Clear all");
+	$self->{backupRecursiveOptionAll} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, -1, "All", wxDefaultPosition, wxDefaultSize, wxRB_GROUP|wxRB_USE_CHECKBOX);
+	$self->{backupRecursiveOptionSome} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, -1, "Only if folder name ", wxDefaultPosition, wxDefaultSize, wxRB_USE_CHECKBOX);
+	$self->{backupRecursiveOptionSomeChoiceName} = Wx::ComboBox->new($self->{backupRecursiveOptionsPanel}, -1, "", wxDefaultPosition, wxDefaultSize, ["is equal to", "constains", "start with", "end with"], wxCB_DROPDOWN|wxCB_DROPDOWN);
+	$self->{backupRecursiveOptionSomeChoiceValue} = Wx::TextCtrl->new($self->{backupRecursiveOptionsPanel}, -1, "", wxDefaultPosition, wxDefaultSize, );
+	$self->{backupRecursiveOptionNone} = Wx::RadioButton->new($self->{backupRecursiveOptionsPanel}, -1, "None (only files)", wxDefaultPosition, wxDefaultSize, wxRB_USE_CHECKBOX);
+	$self->{start_button} = Wx::Button->new($self->{backupPanel}, -1, "Start");
+	$self->{Close_button} = Wx::Button->new($self->{backupPanel}, -1, "Close");
+	$self->{notebook_4_pane_2} = Wx::Panel->new($self->{backupNotebook}, -1, wxDefaultPosition, wxDefaultSize, );
+	$self->{askAuthInfoLabel} = Wx::StaticText->new($self->{askAuthInfoSubPanel}, -1, "Go to your browser and give me permissions to acess to your acount", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
+	$self->{cancelAuthButton} = Wx::Button->new($self->{askAuthPanel}, -1, "Cancel");
+	$self->{nextAuthButton} = Wx::Button->new($self->{askAuthPanel}, -1, "Get Auth...");
+	$self->{getTokenInfoLabel} = Wx::StaticText->new($self->{getTokenInfoSubPanel}, -1, "Check the autorization. \n(Don't if you haven't give autorization in the browser)", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
+	$self->{cancelTokenButton} = Wx::Button->new($self->{getTokenPanel}, -1, "Cancel");
+	$self->{nextTokenButton} = Wx::Button->new($self->{getTokenPanel}, -1, "Check...");
 
-    $self->__set_properties();
-    $self->__do_layout();
+	$self->__set_properties();
+	$self->__do_layout();
 
-    Wx::Event::EVT_MENU($self, $self->{Login}->GetId, \&do_login);
-    Wx::Event::EVT_MENU($self, $self->{Logout}->GetId, \&do_logout);
-    Wx::Event::EVT_MENU($self, $self->{Exit}->GetId, \&do_exit);
-    Wx::Event::EVT_LIST_BEGIN_DRAG($self, $self->{foldersList}->GetId, \&on_begin);
-    Wx::Event::EVT_LIST_DELETE_ITEM($self, $self->{foldersList}->GetId, \&on_delete);
-    Wx::Event::EVT_LIST_ITEM_SELECTED($self, $self->{foldersList}->GetId, \&on_selected);
-    Wx::Event::EVT_BUTTON($self, $self->{browseDirNameButton}->GetId, \&do_browse);
-    Wx::Event::EVT_BUTTON($self, $self->{RemoveButton}->GetId, \&do_remove_selected);
-    Wx::Event::EVT_BUTTON($self, $self->{clearAllButton}->GetId, \&do_remove_all);
-    Wx::Event::EVT_BUTTON($self, $self->{start_button}->GetId, \&do_backup);
-    Wx::Event::EVT_BUTTON($self, $self->{Close_button}->GetId, \&do_close);
-    Wx::Event::EVT_BUTTON($self, $self->{cancelAuthButton}->GetId, \&go_main);
-    Wx::Event::EVT_BUTTON($self, $self->{nextAuthButton}->GetId, \&go_askAuth);
-    Wx::Event::EVT_BUTTON($self, $self->{cancelTokenButton}->GetId, \&go_main);
-    Wx::Event::EVT_BUTTON($self, $self->{nextTokenButton}->GetId, \&go_getToken);
+	Wx::Event::EVT_MENU($self, $self->{Login}->GetId, \&do_login);
+	Wx::Event::EVT_MENU($self, $self->{Logout}->GetId, \&do_logout);
+	Wx::Event::EVT_MENU($self, $self->{Exit}->GetId, \&do_exit);
+	Wx::Event::EVT_LIST_BEGIN_DRAG($self, $self->{foldersList}->GetId, \&on_begin);
+	Wx::Event::EVT_LIST_DELETE_ITEM($self, $self->{foldersList}->GetId, \&on_delete);
+	Wx::Event::EVT_LIST_ITEM_SELECTED($self, $self->{foldersList}->GetId, \&on_selected);
+	Wx::Event::EVT_BUTTON($self, $self->{browseDirNameButton}->GetId, \&do_browse);
+	Wx::Event::EVT_BUTTON($self, $self->{RemoveButton}->GetId, \&do_remove_selected);
+	Wx::Event::EVT_BUTTON($self, $self->{clearAllButton}->GetId, \&do_remove_all);
+	Wx::Event::EVT_BUTTON($self, $self->{start_button}->GetId, \&do_backup);
+	Wx::Event::EVT_BUTTON($self, $self->{Close_button}->GetId, \&do_close);
+	Wx::Event::EVT_BUTTON($self, $self->{cancelAuthButton}->GetId, \&go_main);
+	Wx::Event::EVT_BUTTON($self, $self->{nextAuthButton}->GetId, \&go_askAuth);
+	Wx::Event::EVT_BUTTON($self, $self->{cancelTokenButton}->GetId, \&go_main);
+	Wx::Event::EVT_BUTTON($self, $self->{nextTokenButton}->GetId, \&go_getToken);
 
-    # end wxGlade
+# end wxGlade
 	if(defined $db->{user} and $db->{user}->{auth_token}){
 		$self->__showMainPanel();
 		$self->__setStatus();
@@ -276,8 +277,8 @@ sub new {
 	}else{
 		$self->__showLoginPanel();
 		$self->SetStatusText('The user is not yet authorized',0);
-	} 
-	
+	}
+
     return $self;
 
 }
@@ -285,107 +286,107 @@ sub new {
 
 sub __set_properties {
     my $self = shift;
-    # begin wxGlade: MyFrame::__set_properties
-    $self->SetTitle("Disk2Flickr");
-    $self->SetSize(Wx::Size->new(550, 340));
-    $self->{mainStatusBar}->SetStatusWidths(-1,0);
-    
+# begin wxGlade: MyFrame::__set_properties
+
+	$self->SetTitle("Disk2Flickr");
+	$self->SetSize(Wx::Size->new(550, 340));
+	$self->{mainStatusBar}->SetStatusWidths(-1,0);
+
 	my( @mainStatusBar_fields ) = (
 		"User Status",
 		""
 	);
 
-    if( @mainStatusBar_fields ) {
-    	$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_)     
+	if( @mainStatusBar_fields ) {
+		$self->{mainStatusBar}->SetStatusText($mainStatusBar_fields[$_], $_)
 		for 0 .. $#mainStatusBar_fields ;
 	}
-    $self->{foldersListPanel}->SetScrollRate(10, 10);
-    $self->{backupRecursiveOptionSomeChoiceName}->SetSelection(-1);
-    $self->{mainPanel}->SetScrollRate(10, 10);
-    $self->{loginPanel}->Show(0);
-    $self->{loginPanel}->SetScrollRate(10, 10);
-    # end wxGlade
+	$self->{foldersListPanel}->SetScrollRate(10, 10);
+	$self->{backupRecursiveOptionSomeChoiceName}->SetSelection(-1);
+	$self->{mainPanel}->SetScrollRate(10, 10);
+	$self->{loginPanel}->Show(0);
+	$self->{loginPanel}->SetScrollRate(10, 10);
+
+# end wxGlade
 }
 
 sub __do_layout {
     my $self = shift;
-    # begin wxGlade: MyFrame::__do_layout
-    $self->{mainSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{loginPanelSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{getTokenSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{getTokenControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{getTokenInfoSubHSizer_staticbox}->Lower();
-    $self->{getTokenInfoSubHSizer} = Wx::StaticBoxSizer->new($self->{getTokenInfoSubHSizer_staticbox}, wxVERTICAL);
-    $self->{getTokenInfoSubVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{askAuthSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{askAuthControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{askAuthInfoSubHSizer_staticbox}->Lower();
-    $self->{askAuthInfoSubHSizer} = Wx::StaticBoxSizer->new($self->{askAuthInfoSubHSizer_staticbox}, wxVERTICAL);
-    $self->{askAuthInfoSubVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{mainPainelSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{backupSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{mainControlHSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{mainControlVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{backupSubSizer_staticbox}->Lower();
-    $self->{backupSubSizer} = Wx::StaticBoxSizer->new($self->{backupSubSizer_staticbox}, wxVERTICAL);
-    $self->{backupRecursiveOptionsSizer_staticbox}->Lower();
-    $self->{backupRecursiveOptionsSizer} = Wx::StaticBoxSizer->new($self->{backupRecursiveOptionsSizer_staticbox}, wxVERTICAL);
-    $self->{backupRecursiveOptionSomeSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{foldersControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{foldersListSizer} = Wx::BoxSizer->new(wxVERTICAL);
-    $self->{foldersListSizer}->Add($self->{foldersList}, 1, wxEXPAND, 0);
-    $self->{foldersListPanel}->SetSizer($self->{foldersListSizer});
-    $self->{backupSubSizer}->Add($self->{foldersListPanel}, 1, wxEXPAND, 0);
-    $self->{foldersControlSizer}->Add($self->{browseDirNameButton}, 0, 0, 0);
-    $self->{foldersControlSizer}->Add($self->{RemoveButton}, 0, 0, 0);
-    $self->{foldersControlSizer}->Add($self->{clearAllButton}, 0, 0, 0);
-    $self->{backupSubSizer}->Add($self->{foldersControlSizer}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionAll}, 0, 0, 0);
-    $self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSome}, 0, wxALIGN_CENTER_VERTICAL, 0);
-    $self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSomeChoiceName}, 0, 0, 0);
-    $self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSomeChoiceValue}, 0, 0, 0);
-    $self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionSomeSizer}, 1, wxEXPAND, 0);
-    $self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionNone}, 0, 0, 0);
-    $self->{backupRecursiveOptionsPanel}->SetSizer($self->{backupRecursiveOptionsSizer});
-    $self->{backupSubSizer}->Add($self->{backupRecursiveOptionsPanel}, 0, wxTOP|wxEXPAND, 2);
-    $self->{backupSubPanel}->SetSizer($self->{backupSubSizer});
-    $self->{backupSizer}->Add($self->{backupSubPanel}, 1, wxEXPAND, 0);
-    $self->{mainControlVSizer}->Add($self->{start_button}, 0, 0, 0);
-    $self->{mainControlVSizer}->Add(20, 1, 0, 0, 0);
-    $self->{mainControlVSizer}->Add($self->{Close_button}, 0, 0, 0);
-    $self->{mainControlHSizer}->Add($self->{mainControlVSizer}, 0, wxTOP|wxALIGN_CENTER_HORIZONTAL, 10);
-    $self->{backupSizer}->Add($self->{mainControlHSizer}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{backupPanel}->SetSizer($self->{backupSizer});
-    $self->{backupNotebook}->AddPage($self->{backupPanel}, "Backup");
-    $self->{backupNotebook}->AddPage($self->{notebook_4_pane_2}, "Help");
-    $self->{mainPainelSizer}->Add($self->{backupNotebook}, 1, wxEXPAND, 0);
-    $self->{mainPanel}->SetSizer($self->{mainPainelSizer});
-    $self->{mainSizer}->Add($self->{mainPanel}, 1, wxEXPAND, 0);
-    $self->{askAuthInfoSubVSizer}->Add($self->{askAuthInfoLabel}, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2);
-    $self->{askAuthInfoSubHSizer}->Add($self->{askAuthInfoSubVSizer}, 1, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{askAuthInfoSubPanel}->SetSizer($self->{askAuthInfoSubHSizer});
-    $self->{askAuthSizer}->Add($self->{askAuthInfoSubPanel}, 5, wxEXPAND, 0);
-    $self->{askAuthControlSizer}->Add($self->{cancelAuthButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{askAuthControlSizer}->Add(20, 1, 0, 0, 0);
-    $self->{askAuthControlSizer}->Add($self->{nextAuthButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{askAuthSizer}->Add($self->{askAuthControlSizer}, 1, wxTOP|wxALIGN_CENTER_HORIZONTAL, 5);
-    $self->{askAuthPanel}->SetSizer($self->{askAuthSizer});
-    $self->{loginPanelSizer}->Add($self->{askAuthPanel}, 1, wxEXPAND, 0);
-    $self->{getTokenInfoSubVSizer}->Add($self->{getTokenInfoLabel}, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2);
-    $self->{getTokenInfoSubHSizer}->Add($self->{getTokenInfoSubVSizer}, 1, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{getTokenInfoSubPanel}->SetSizer($self->{getTokenInfoSubHSizer});
-    $self->{getTokenSizer}->Add($self->{getTokenInfoSubPanel}, 5, wxEXPAND, 0);
-    $self->{getTokenControlSizer}->Add($self->{cancelTokenButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{getTokenControlSizer}->Add(20, 1, 0, 0, 0);
-    $self->{getTokenControlSizer}->Add($self->{nextTokenButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    $self->{getTokenSizer}->Add($self->{getTokenControlSizer}, 1, wxTOP|wxALIGN_CENTER_HORIZONTAL, 5);
-    $self->{getTokenPanel}->SetSizer($self->{getTokenSizer});
-    $self->{loginPanelSizer}->Add($self->{getTokenPanel}, 1, wxEXPAND, 0);
-    $self->{loginPanel}->SetSizer($self->{loginPanelSizer});
-    $self->{mainSizer}->Add($self->{loginPanel}, 2, wxEXPAND, 0);
-    $self->SetSizer($self->{mainSizer});
-    $self->Layout();
-    # end wxGlade
+# begin wxGlade: MyFrame::__do_layout
+
+	$self->{mainSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{loginPanelSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{getTokenSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{getTokenControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{getTokenInfoSubHSizer}= Wx::StaticBoxSizer->new($self->{getTokenInfoSubHSizer_staticbox}, wxVERTICAL);
+	$self->{getTokenInfoSubVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{askAuthSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{askAuthControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{askAuthInfoSubHSizer}= Wx::StaticBoxSizer->new($self->{askAuthInfoSubHSizer_staticbox}, wxVERTICAL);
+	$self->{askAuthInfoSubVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{mainPainelSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{backupSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{mainControlHSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{mainControlVSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{backupSubSizer}= Wx::StaticBoxSizer->new($self->{backupSubSizer_staticbox}, wxVERTICAL);
+	$self->{backupRecursiveOptionsSizer}= Wx::StaticBoxSizer->new($self->{backupRecursiveOptionsSizer_staticbox}, wxVERTICAL);
+	$self->{backupRecursiveOptionSomeSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{foldersControlSizer} = Wx::BoxSizer->new(wxHORIZONTAL);
+	$self->{foldersListSizer} = Wx::BoxSizer->new(wxVERTICAL);
+	$self->{foldersListSizer}->Add($self->{foldersList}, 1, wxEXPAND, 0);
+	$self->{foldersListPanel}->SetSizer($self->{foldersListSizer});
+	$self->{backupSubSizer}->Add($self->{foldersListPanel}, 1, wxEXPAND, 0);
+	$self->{foldersControlSizer}->Add($self->{browseDirNameButton}, 0, 0, 0);
+	$self->{foldersControlSizer}->Add($self->{RemoveButton}, 0, 0, 0);
+	$self->{foldersControlSizer}->Add($self->{clearAllButton}, 0, 0, 0);
+	$self->{backupSubSizer}->Add($self->{foldersControlSizer}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionAll}, 0, 0, 0);
+	$self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSome}, 0, wxALIGN_CENTER_VERTICAL, 0);
+	$self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSomeChoiceName}, 0, 0, 0);
+	$self->{backupRecursiveOptionSomeSizer}->Add($self->{backupRecursiveOptionSomeChoiceValue}, 0, 0, 0);
+	$self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionSomeSizer}, 1, wxEXPAND, 0);
+	$self->{backupRecursiveOptionsSizer}->Add($self->{backupRecursiveOptionNone}, 0, 0, 0);
+	$self->{backupRecursiveOptionsPanel}->SetSizer($self->{backupRecursiveOptionsSizer});
+	$self->{backupSubSizer}->Add($self->{backupRecursiveOptionsPanel}, 0, wxTOP|wxEXPAND, 2);
+	$self->{backupSubPanel}->SetSizer($self->{backupSubSizer});
+	$self->{backupSizer}->Add($self->{backupSubPanel}, 1, wxEXPAND, 0);
+	$self->{mainControlVSizer}->Add($self->{start_button}, 0, 0, 0);
+	$self->{mainControlVSizer}->Add(20, 1, 0, 0, 0);
+	$self->{mainControlVSizer}->Add($self->{Close_button}, 0, 0, 0);
+	$self->{mainControlHSizer}->Add($self->{mainControlVSizer}, 0, wxTOP|wxALIGN_CENTER_HORIZONTAL, 10);
+	$self->{backupSizer}->Add($self->{mainControlHSizer}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{backupPanel}->SetSizer($self->{backupSizer});
+	$self->{backupNotebook}->AddPage($self->{backupPanel}, "Backup");
+	$self->{backupNotebook}->AddPage($self->{notebook_4_pane_2}, "Help");
+	$self->{mainPainelSizer}->Add($self->{backupNotebook}, 1, wxEXPAND, 0);
+	$self->{mainPanel}->SetSizer($self->{mainPainelSizer});
+	$self->{mainSizer}->Add($self->{mainPanel}, 1, wxEXPAND, 0);
+	$self->{askAuthInfoSubVSizer}->Add($self->{askAuthInfoLabel}, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2);
+	$self->{askAuthInfoSubHSizer}->Add($self->{askAuthInfoSubVSizer}, 1, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{askAuthInfoSubPanel}->SetSizer($self->{askAuthInfoSubHSizer});
+	$self->{askAuthSizer}->Add($self->{askAuthInfoSubPanel}, 5, wxEXPAND, 0);
+	$self->{askAuthControlSizer}->Add($self->{cancelAuthButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{askAuthControlSizer}->Add(20, 1, 0, 0, 0);
+	$self->{askAuthControlSizer}->Add($self->{nextAuthButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{askAuthSizer}->Add($self->{askAuthControlSizer}, 1, wxTOP|wxALIGN_CENTER_HORIZONTAL, 5);
+	$self->{askAuthPanel}->SetSizer($self->{askAuthSizer});
+	$self->{loginPanelSizer}->Add($self->{askAuthPanel}, 1, wxEXPAND, 0);
+	$self->{getTokenInfoSubVSizer}->Add($self->{getTokenInfoLabel}, 0, wxALL|wxALIGN_CENTER_VERTICAL, 2);
+	$self->{getTokenInfoSubHSizer}->Add($self->{getTokenInfoSubVSizer}, 1, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{getTokenInfoSubPanel}->SetSizer($self->{getTokenInfoSubHSizer});
+	$self->{getTokenSizer}->Add($self->{getTokenInfoSubPanel}, 5, wxEXPAND, 0);
+	$self->{getTokenControlSizer}->Add($self->{cancelTokenButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{getTokenControlSizer}->Add(20, 1, 0, 0, 0);
+	$self->{getTokenControlSizer}->Add($self->{nextTokenButton}, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+	$self->{getTokenSizer}->Add($self->{getTokenControlSizer}, 1, wxTOP|wxALIGN_CENTER_HORIZONTAL, 5);
+	$self->{getTokenPanel}->SetSizer($self->{getTokenSizer});
+	$self->{loginPanelSizer}->Add($self->{getTokenPanel}, 1, wxEXPAND, 0);
+	$self->{loginPanel}->SetSizer($self->{loginPanelSizer});
+	$self->{mainSizer}->Add($self->{loginPanel}, 2, wxEXPAND, 0);
+	$self->SetSizer($self->{mainSizer});
+	$self->Layout();
+
+# end wxGlade
 }
 
 sub do_logout {
@@ -499,7 +500,7 @@ sub go_main {
     $event->Skip;
     # end wxGlade
 }
-	
+
 sub go_askAuth {
     my ($self, $event) = @_;
 	$flickr->askAuth() or carp q|ask auth error| and return undef;
@@ -522,7 +523,7 @@ sub go_getToken {
 	$self->__setStatus();
 	$syncDB->();
 	#print Dumper $self->{flickr};
-	return;	
+	return;
     # wxGlade: MyFrame::go_getToken <event_handler>
     warn "Event handler (go_getToken) not implemented";
     $event->Skip;
@@ -556,6 +557,7 @@ sub do_login {
     $event->Skip;
     # end wxGlade
 }
+
 
 # end of class MyFrame
 
