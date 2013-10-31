@@ -11,7 +11,9 @@ use File::HomeDir;
 use Storable;
 use File::Copy qw(cp);
 use Cwd qw{abs_path};
-
+use Thread;
+use Thread::Queue;
+use Thread::Semaphore;
 ######################my code ######################################
 
 $\ = "\n";
@@ -20,7 +22,16 @@ my $flickr = MyFlickr->new();
 my $pattern = qr/./;
 my $stop = 0;
 my @tags = ();
+
+my $filesQ = Thread::Queue->new(); #mark queue
+my $fileIDQ = Thread::Queue->new(); #mark queue
+my $checkFlickrQ = Thread::Queue->new(); #mark queue
+my $uploadQ = Thread::Queue->new(); #mark queue
+my $foldersQ = Thread::Queue->new(); #mark queue
+#my $filesS = Thread::Semaphore->new(50);
+#my $stopS = Thread::Semaphore->new(0);
 my $home = File::HomeDir->my_home;
+
 
 my $dbfile = qq|$home/.disk2flick|;
 store {}, $dbfile unless -r $dbfile;
@@ -32,40 +43,146 @@ my $syncDB = sub{
 	store $db, $dbfile;
 };
 my $removeUser = sub{
-	delete $db->{user};
+	$db->{currentUser} = '';
 	$syncDB->();
 };
+
+my $loadUser = sub{
+	if(defined $flickr and defined $flickr->{user} and defined $flickr->{user}->{nsid}){
+		$db->{currentUser} = $flickr->{user}->{nsid};
+		$db->{users}->{$db->{currentUser}}->{flickr} = $flickr->{user};
+	}else{
+		$db->{currentUser} = '';
+		$db->{users}->{$db->{currentUser}}->{flickr} = {};
+	}
+	$db->{users}->{$db->{currentUser}}->folders //= {};
+	$db->{users}->{$db->{currentUser}}->files //= {};
+	$db->{users}->{$db->{currentUser}}->fileIDs //= {};
+	$db->{users}->{$db->{currentUser}}->photoIDs //= {};
+	$syncDB->();
+}
+$d->{user} //= {};
+$flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr} if ($db->{currentUser});
+$loadUser->();
 $syncDB->();
 
-sub __upload{
-	my ($file,@tags) = @_;
-	print "1-Upload file $file";
-	my $mtime =  (stat($file))[9];
-	return if defined $db->{filename} and $db->{filename} eq $mtime;
-	print "2-Upload file $file";
-	my $id = __getFileID($file);
-	return if defined $db->{ids}->{$id};
-	print "3-Upload file $file";
-	if ($flickr->checkFlickrPhoto($id) == 0){ #if not yet on flickr, upload
-		my @localtags = (
-			qq|dir:path="$file"|,
-			qq|meta:id="$id"|,
-			q|time:modification="|.localtime($mtime).q|"|,
-			map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file
-		);
-		pop @localtags; #discard filename from dir:step tags
-
-		my $photoid = $flickr->upload($file,@tags, @localtags)
-			or warn "Failed to upload $file" and return;
-		print "File $file uploaded to flickr (photoid = $photoid)";
-		$db->{ids}->{$id} = $photoid;
-	}else{
-		print "File $file ($id) is already on flickr";
-		$db->{ids}->{$id} = 0;
-	}
-	$db->{filename} = $mtime;
-	store $db, $dbfile;
+sub texit{
+	print "Exit thread\n";
+	threads->exit();
 }
+
+my %threads = ();
+
+$threads{filesT} = threads->create({exit => 'threads_only'}, sub {
+	$SIG{'KILL'} = \&texit;
+	print "thread filesT start\n\n";
+	while(1){
+		eval{
+			while (my $filename = $filesQ->dequeue()){
+				my $mtime =  (stat($filename))[9];
+				if($db->{users}->{$db->{currentUser}}->{files}->{$filname}->{mtime} ne $mtime){
+					$fileIDQ->enqueue({file=>$filename,mtime=>$mtime});
+				}else{
+					print "File $filename was previously uploaded and was not modified since then";
+				}
+			}
+			print "thread filesT ends\n\n";
+		};
+		threads->exit() unless $@;
+		warn "$@\nI will Try again";
+	}
+});
+$threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
+	$SIG{'KILL'} = \&texit;
+	while(1){
+		eval{
+			while (my $file = $fileIDQ->dequeue()){
+				my $id = __getFileID($file->{filename});
+				if ($db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
+					my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
+					if( $file->{filename} =~ /^re$/i){
+						print "File $file->{filename} was previously uploaded and still have the same signature and same name";
+					}else{
+						print "File $file->{filename} was previously uploaded and still have the same signature but a diferente name $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
+					}
+				}else{
+					$file->{id} = $id;
+					$checkFlickrQ->enqueue($file);
+				}
+			}
+		}
+	}
+});
+$threads{checkFlickrT} = threads->create({exit => 'threads_only'}, sub {
+	$SIG{'KILL'} = \&texit;
+	while(1){
+		eval{
+			while (my $file = $checkFlickrQ->dequeue()){
+				if (0 == $flickr->checkFlickrPhoto($file->{id})){
+					$uploadQ->enqueue($file);
+				}else{
+					print "File ($file->{filename}) already on flick. Won't duplicate";
+					$db->{users}->{$db->{currentUser}}->{files} = $file;
+					$db->{users}->{$db->{currentUser}}->{fileIDs} = $file;
+				}
+			}
+		}
+	}
+});
+$threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
+	$SIG{'KILL'} = \&texit;
+	while(1){
+		eval{
+			while (my $file = $uploadQ->dequeue()){
+				my @localtags = (
+					qq|dir:filename="$file->{filename}"|,
+					qq|meta:id="$file->{id}"|,
+					q|time:modification="$file->{mtime}"|,
+					map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file->{filename}
+				);
+				#pop @localtags; #discard filename from dir:step tags
+				my $photoid = $flickr->upload($file,@tags, @localtags)
+					or warn "Failed to upload $file" and next;
+				print "File $file uploaded to flickr (photoid = $photoid)";
+				#$db->{ids}->{$db->{users}->{nsid}}->{$file->{id}} = $photoid;
+				$file->{photoid} = $photoid;
+				$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = $file;
+				$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = $file;
+				$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = $file;
+			}
+
+		}
+	}
+});
+# sub __upload{
+# 	my ($file,@tags) = @_;
+# 	print "1-Upload file $file";
+# 	my $mtime =  (stat($file))[9];
+# 	return if defined $db->{filename} and $db->{filename} eq $mtime;
+# 	print "2-Upload file $file";
+# 	my $id = __getFileID($file);
+# 	return if defined $db->{ids}->{$id};
+# 	print "3-Upload file $file";
+# 	if ($flickr->checkFlickrPhoto($id) == 0){ #if not yet on flickr, upload
+# 		my @localtags = (
+# 			qq|dir:path="$file"|,
+# 			qq|meta:id="$id"|,
+# 			q|time:modification="|.localtime($mtime).q|"|,
+# 			map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file
+# 		);
+# 		pop @localtags; #discard filename from dir:step tags
+
+# 		my $photoid = $flickr->upload($file,@tags, @localtags)
+# 			or warn "Failed to upload $file" and return;
+# 		print "File $file uploaded to flickr (photoid = $photoid)";
+# 		$db->{ids}->{$id} = $photoid;
+# 	}else{
+# 		print "File $file ($id) is already on flickr";
+# 		$db->{ids}->{$id} = 0;
+# 	}
+# 	$db->{filename} = $mtime;
+# 	store $db, $dbfile;
+# }
 
 sub __getFileID{
 	warn(q|getFileID: File not defined|) and return undef unless defined $_[0];
@@ -103,17 +220,29 @@ sub __backup{
 
 	opendir DIR, $dir or warn qq|'nao foi possivel abrir o directorio corrente'|;
 
-	my @files = grep {/\.(jpg|nef)$/i} readdir DIR;
+	my @files = grep {/\.(jpg|png)$/i} readdir DIR;
 	foreach (@files){
 		my $path = abs_path(qq|$dir/$_|);
 		print "file=$path";
 		eval{
-			__upload($path,@tags);
+			$filesQ->enqueue($path);
+			#__upload($path,@tags);
 		};
 		warn $@ if $@;
 		exit if $stop;
 	}
 }
+
+$threads{browseT} = threads->create({exit => 'threads_only'}, sub {
+	$SIG{'KILL'} = \&texit;
+	while(1){
+		eval{
+			while (my $folder = $foldersQ->dequeue()){
+				getFolder($folder);
+			}
+		}
+	}
+});
 
 ######################End of my code ######################################
 
@@ -179,7 +308,8 @@ sub  __hideAskAuthPanel{
 
 sub __setStatus{
 	my ($self) = @_;
-	$self->SetStatusText('User ' .  ($db->{user}->{fullname} || $db->{user}->{username}),0);
+	$self->SetStatusText('User ' .  ($db->{users}->{$db->{currentUser}}->{flickr}->{fullname}
+	  || $db->{users}->{$db->{currentUser}}->{flickr}->{username}),0);
 }
 
 ######end of manual generated functions#########################
@@ -273,22 +403,20 @@ sub new {
 
 	Wx::Event::EVT_CLOSE($self,sub{
 			my ($self, $event) = @_;
+			foreach(keys %threads){
+				$threads{$_}->kill('SIGKILL');
+			}
 			$syncDB->();
 			print "Goodby";
 			$event->Skip;
 	});
 
-	if(defined $db->{user} and $db->{user}->{auth_token}){
+	if(defined $db->{users}->{$db->{currentUser}}->{flickr}->{auth_token}){
 		$self->__showMainPanel();
 		$self->__setStatus();
-		$flickr->{user} = $db->{user};
-		my $p = 0;
-		if (defined $db->{localfolders}
-		    and defined $db->{localfolders}->{$db->{user}->{nsid}}
-		  ){
-			foreach (sort keys $db->{localfolders}->{$db->{user}->{nsid}}){
-						$self->{foldersList}->InsertStringItem($p++,$_);
-			}
+		$loadUser->();
+		foreach (sort keys $db->{users}->{$db->{currentUser}}->{folders}){
+					$self->{foldersList}->InsertStringItem($p++,$_);
 		}
 	}else{
 		$self->__showLoginPanel();
@@ -494,8 +622,7 @@ sub do_browse {
 		$lastDirectory = $dlg->GetPath();
 		my $p = $self->{foldersList}->GetItemCount;
 		$self->{foldersList}->InsertStringItem($p,$lastDirectory);
-		$db->{localfolders}->{$db->{user}->{nsid}}->{$lastDirectory} = time
-			if defined $db->{user} and defined $db->{user}->{nsid};
+		$db->{users}->{$db->{currentUser}}->{folders}->{$lastDirectory} = time;
 	}
 	return $event->Skip;
 # wxGlade: MyFrame::do_browse <event_handler>
@@ -510,13 +637,8 @@ sub do_browse {
 sub do_remove_selected {
 	my ($self, $event) = @_;
 	my $removeFromDB = sub{
-		return sub{} unless defined $db->{localfolders}
-			and defined $db->{localfolders}->{$db->{user}->{nsid}};
-		my $foldersInDB = $db->{localfolders}->{$db->{user}->{nsid}};
-		return sub{
-			delete $foldersInDB->{$self->{foldersList}->GetItemText(shift)}
-		}
-	}->();
+		delete $db->{users}->{$db->{currentUser}}->{folders}->{$self->{foldersList}->GetItemText(shift)};
+	};
 	my $p = $self->{foldersList}->GetFirstSelected;
 	$removeFromDB->($p);
 	$self->{foldersList}->DeleteItem($p);
@@ -537,8 +659,7 @@ sub do_remove_selected {
 sub do_remove_all {
 	my ($self, $event) = @_;
 	$self->{foldersList}->ClearAll;
-	delete $db->{localfolders}->{$db->{user}->{nsid}}
-		if defined $db->{user} and defined $db->{user}->{nsid};
+	$db->{users}->{$db->{currentUser}}{folders} = {};
 	return $event->Skip;
 
 # wxGlade: MyFrame::do_remove_all <event_handler>
@@ -556,7 +677,8 @@ sub do_backup {
 	my $i = 0;
 	while($i < $count){
 		print $self->{foldersList}->GetItemText($i);
-		$getFolder->($self->{foldersList}->GetItemText($i++));
+		#$getFolder->($self->{foldersList}->GetItemText($i++));
+		$foldersQ->enqueue($self->{foldersList}->GetItemText($i++));
 	}
 	return $event->Skip;
 # wxGlade: MyFrame::do_backup <event_handler>
@@ -614,9 +736,8 @@ sub go_getToken {
 	print 'Get token...';
 	$flickr->getToken() or return $self-> __showAskAuthPanel();
 	$self->__showMainPanel();
-	$db->{user}= $flickr->{user};
+	$loadUser->();
 	$self->__setStatus();
-	$syncDB->();
 	return $event->Skip;
 # wxGlade: MyFrame::go_getToken <event_handler>
 
