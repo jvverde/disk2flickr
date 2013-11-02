@@ -8,12 +8,15 @@ use strict;
 use MyFlickr;
 use Digest::SHA qw(sha256);
 use File::HomeDir;
-use Storable;
+use Storable qw(lock_retrieve lock_store freeze thaw);
 use File::Copy qw(cp);
 use Cwd qw{abs_path};
-use Thread;
+use threads;
+use threads::shared;
 use Thread::Queue;
 use Thread::Semaphore;
+use Data::Dumper;
+use JSON;
 ######################my code ######################################
 
 $\ = "\n";
@@ -34,13 +37,30 @@ my $home = File::HomeDir->my_home;
 
 
 my $dbfile = qq|$home/.disk2flick|;
-store {}, $dbfile unless -r $dbfile;
-my $db = retrieve($dbfile) || {};
-cp $dbfile, qq|$dbfile.old|;
+my $json  = JSON->new->utf8;
+my $db = shared_clone do{
+	if (-r $dbfile){
+		local $/;
+	  open F, '<', $dbfile;
+	  my $json_text   = <F>;
+	  close F;
+		cp $dbfile, qq|$dbfile.old|;
+	  $json->decode( $json_text );
+	}else{
+		{}
+	}
+};
+
+#lock_store {}, $dbfile unless -r $dbfile;
+#my $dbobj = lock_retrieve($dbfile) || {};
 $db->{cnt}++;
 
+print Dumper $db;
+
 my $syncDB = sub{
-	store $db, $dbfile;
+	open F, '>', $dbfile;
+	print F $json->encode($db);
+	close F;
 };
 my $removeUser = sub{
 	$db->{currentUser} = '';
@@ -50,18 +70,20 @@ my $removeUser = sub{
 my $loadUser = sub{
 	if(defined $flickr and defined $flickr->{user} and defined $flickr->{user}->{nsid}){
 		$db->{currentUser} = $flickr->{user}->{nsid};
-		$db->{users}->{$db->{currentUser}}->{flickr} = $flickr->{user};
+		$db->{users}->{$db->{currentUser}} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr} = shared_clone $flickr->{user};
 	}else{
 		$db->{currentUser} = '';
-		$db->{users}->{$db->{currentUser}}->{flickr} = {};
+		$db->{users}->{$db->{currentUser}} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr} = shared_clone {};
 	}
-	$db->{users}->{$db->{currentUser}}->folders //= {};
-	$db->{users}->{$db->{currentUser}}->files //= {};
-	$db->{users}->{$db->{currentUser}}->fileIDs //= {};
-	$db->{users}->{$db->{currentUser}}->photoIDs //= {};
+	$db->{users}->{$db->{currentUser}}->{folders} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{files} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{fileIDs} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{photoIDs} //= shared_clone {};
 	$syncDB->();
-}
-$d->{user} //= {};
+};
+$db->{users} //= shared_clone {};
 $flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr} if ($db->{currentUser});
 $loadUser->();
 $syncDB->();
@@ -75,18 +97,17 @@ my %threads = ();
 
 $threads{filesT} = threads->create({exit => 'threads_only'}, sub {
 	$SIG{'KILL'} = \&texit;
-	print "thread filesT start\n\n";
 	while(1){
 		eval{
 			while (my $filename = $filesQ->dequeue()){
 				my $mtime =  (stat($filename))[9];
-				if($db->{users}->{$db->{currentUser}}->{files}->{$filname}->{mtime} ne $mtime){
-					$fileIDQ->enqueue({file=>$filename,mtime=>$mtime});
-				}else{
+				if(defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
+					and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime){
 					print "File $filename was previously uploaded and was not modified since then";
+				}else{
+					$fileIDQ->enqueue({filename=>$filename,mtime=>$mtime});
 				}
 			}
-			print "thread filesT ends\n\n";
 		};
 		threads->exit() unless $@;
 		warn "$@\nI will Try again";
@@ -97,6 +118,7 @@ $threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
 	while(1){
 		eval{
 			while (my $file = $fileIDQ->dequeue()){
+				print "File=>",$file->{filename};
 				my $id = __getFileID($file->{filename});
 				if ($db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
 					my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
@@ -104,13 +126,16 @@ $threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
 						print "File $file->{filename} was previously uploaded and still have the same signature and same name";
 					}else{
 						print "File $file->{filename} was previously uploaded and still have the same signature but a diferente name $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
+						$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
 					}
 				}else{
 					$file->{id} = $id;
 					$checkFlickrQ->enqueue($file);
 				}
 			}
-		}
+		};
+		threads->exit() unless $@;
+		warn "$@\nI will Try again";
 	}
 });
 $threads{checkFlickrT} = threads->create({exit => 'threads_only'}, sub {
@@ -122,15 +147,18 @@ $threads{checkFlickrT} = threads->create({exit => 'threads_only'}, sub {
 					$uploadQ->enqueue($file);
 				}else{
 					print "File ($file->{filename}) already on flick. Won't duplicate";
-					$db->{users}->{$db->{currentUser}}->{files} = $file;
-					$db->{users}->{$db->{currentUser}}->{fileIDs} = $file;
+					$db->{users}->{$db->{currentUser}}->{files} = shared_clone $file;
+					$db->{users}->{$db->{currentUser}}->{fileIDs} = shared_clone $file;
 				}
 			}
-		}
+		};
+		threads->exit() unless $@;
+		warn "$@\nI will Try again";
 	}
 });
 $threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
 	$SIG{'KILL'} = \&texit;
+	#my $db = lock_retrieve($dbfile);
 	while(1){
 		eval{
 			while (my $file = $uploadQ->dequeue()){
@@ -141,17 +169,22 @@ $threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
 					map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file->{filename}
 				);
 				#pop @localtags; #discard filename from dir:step tags
-				my $photoid = $flickr->upload($file,@tags, @localtags)
+				print "Prepare to upload $file->{filename}";
+				my $photoid = $flickr->upload($file->{filename},@tags, @localtags)
 					or warn "Failed to upload $file" and next;
-				print "File $file uploaded to flickr (photoid = $photoid)";
+				print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
 				#$db->{ids}->{$db->{users}->{nsid}}->{$file->{id}} = $photoid;
 				$file->{photoid} = $photoid;
-				$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = $file;
-				$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = $file;
-				$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = $file;
+				$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
+				$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = shared_clone $file;
+				$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = shared_clone $file;
+				#print Dumper $db;
+				#lock_store $db, $dbfile;
+				$syncDB->();
 			}
-
-		}
+		};
+		threads->exit() unless $@;
+		warn "$@\nI will Try again";
 	}
 });
 # sub __upload{
@@ -415,6 +448,7 @@ sub new {
 		$self->__showMainPanel();
 		$self->__setStatus();
 		$loadUser->();
+		my $p = 0;
 		foreach (sort keys $db->{users}->{$db->{currentUser}}->{folders}){
 					$self->{foldersList}->InsertStringItem($p++,$_);
 		}
@@ -673,6 +707,10 @@ sub do_remove_all {
 
 sub do_backup {
 	my ($self, $event) = @_;
+	unless(defined $flickr->{user} and defined $flickr->{user}->{nsid}){
+		print "User not login";
+		return $self->do_login($event);
+	}
 	my $count = $self->{foldersList}->GetItemCount;
 	my $i = 0;
 	while($i < $count){
@@ -719,7 +757,7 @@ sub go_main {
 
 sub go_askAuth {
 	my ($self, $event) = @_;
-	$flickr->askAuth() or carp q|ask auth error| and return undef;
+	$flickr->askAuth() or carp q|ask auth error|;
 	$self->__showCheckTokenPanel();
   return  $event->Skip;
 # wxGlade: MyFrame::go_askAuth <event_handler>

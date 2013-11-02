@@ -28,7 +28,7 @@ sub new {
 
 sub askAuth{
 	my $self = shift;
-	
+
 	my $permission_wanted = 'write';
 	print 'Get frob...';
 	my $response = $api->execute_method('flickr.auth.getFrob');
@@ -37,8 +37,11 @@ sub askAuth{
 	$r =~ /<frob>(.+)<\/frob>/ or carp(qq|Warning:\n$r|) and return undef;
 	my $frob = $1;
 	my $url = $api->request_auth_url($permission_wanted,$frob);
-	$url =~ s/&/^&/g if $^O eq 'MSWin32'; #if windows escape & in args of start cmd 
-	open_browser($url);
+	$url =~ s/&/^&/g if $^O eq 'MSWin32'; #if windows escape & in args of start cmd
+	use threads;
+	async {
+		open_browser($url);
+	};
 	$self->{frob} = $frob;
 	return $frob;
 }
