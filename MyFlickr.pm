@@ -6,7 +6,11 @@ use Data::Dumper;
 use Browser::Open qw|open_browser|;
 use Flickr::Upload;
 use XML::XPath;
+use XML::Simple;
 use Carp;
+use threads;
+use threads::shared;
+use Thread::Queue;
 
 my $api_key = '470cd47d4fb1e54ac33ff740bc59bef4';
 my $shared_secret = '354288e4575ad352';
@@ -26,6 +30,7 @@ sub new {
 	return bless {}, $self;
 }
 
+my $xs = XML::Simple->new();
 sub askAuth{
 	my $self = shift;
 
@@ -72,26 +77,81 @@ sub getToken{
 sub checkFlickrPhoto{
 	my ($self,$id) = @_;
 	#print "Check photo $id";
-	my $response = $api->execute_method('flickr.photos.search', {
-	  user_id => $self->{nsid},
+	my $param = {
+	  user_id => $self->{user}->{nsid},
 	  auth_token => $self->{user}->{auth_token},
-	  machine_tags => qq|meta:id="$id"|
-	});
+	  tags => qq|$id|
+	};
+	print Dumper $param;
+	my $response = $api->execute_method('flickr.photos.search', $param);
 	my $answer  = $response->decoded_content(charset => 'none');
+	print "answer=$answer";
 	my $xp = XML::XPath->new(xml => $answer);
 	carp qq|Wrong answer:\n\t$answer|
 		and return undef if $xp->getNodeText('/rsp/@stat')->value ne 'ok';
 	my $nphotos = $xp->getNodeText('/rsp/photos/@total')->value;
 	return $nphotos;
 }
-
+sub checkAllFlickrPhotos{
+	my ($self) = @_;
+	print "Check All photos";
+	my $q = Thread::Queue->new(); #queue
+	my $wait :shared = 1;
+	my %result :shared = ();
+	$result{filesIDs} = shared_clone {};
+	$result{photoIDs} = shared_clone {};
+	async{
+		my $cnt = 0;
+		while(my $photos = $q->dequeue()){
+			#print Dumper $photos;
+			foreach (keys %$photos){
+				my $mtags = $photos->{$_}->{'machine_tags'};
+				my @mtags = split /\s+/, $mtags;
+				my %tags = map{split /\s*=\s*/,$_} @mtags;
+				#print Dumper \%tags;
+				$result{photoIDs}->{$_} = shared_clone {
+					mtags =>  \%tags,
+					tagID => $tags{'meta:id'},
+					photoID => $_,
+					photo => $photos->{$_}
+				};
+				$result{filesIDs}->{$tags{'meta:id'}} //= shared_clone [];
+				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $result{photoIDs}->{$_};
+			}
+			#print Dumper \%result;
+		}
+		lock($wait);
+		$wait = 0;
+		cond_signal($wait);
+	};
+	my $cnt = 1;
+	while(1){
+		my $response = $api->execute_method('flickr.photos.search', {
+		  user_id => $self->{user}->{nsid},
+		  auth_token => $self->{user}->{auth_token},
+		  extras => 'machine_tags',
+		  per_page => 500,
+		  page => $cnt++
+		});
+		my $answer  = $response->decoded_content(charset => 'none');
+		my $result = $xs->XMLin($answer);
+		print Dumper $result and last if $result->{stat} ne 'ok';
+		$q->enqueue($result->{photos}->{photo});
+	  last if $result->{photos}->{page} >= $result->{photos}->{pages};
+	};
+	lock($wait);
+	$q->enqueue(undef);
+  cond_wait($wait) until $wait == 0;
+  return \%result;
+}
 sub upload{
 	my ($self,$file,@tags) = @_;
 	my $photoid = $uploader->upload(
 		photo => $file,
 		auth_token => $self->{user}->{auth_token},
 		tags => (join ' ', @tags),
-		is_public => 0
-	) or carp "Failed to upload $file" and return undef;
+		is_public => 0,
+		hidden => 0
+	) or warn "Failed to upload $file" and return undef;
 	return $photoid;
 }

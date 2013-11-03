@@ -37,7 +37,7 @@ my $home = File::HomeDir->my_home;
 
 
 my $dbfile = qq|$home/.disk2flick|;
-my $json  = JSON->new->utf8;
+my $json  = JSON->new->utf8->pretty;
 my $db = shared_clone do{
 	if (-r $dbfile){
 		local $/;
@@ -55,7 +55,7 @@ my $db = shared_clone do{
 #my $dbobj = lock_retrieve($dbfile) || {};
 $db->{cnt}++;
 
-print Dumper $db;
+#print Dumper $db;
 
 my $syncDB = sub{
 	open F, '>', $dbfile;
@@ -67,15 +67,39 @@ my $removeUser = sub{
 	$syncDB->();
 };
 
+my $syncing :shared = 0;
 my $loadUser = sub{
 	if(defined $flickr and defined $flickr->{user} and defined $flickr->{user}->{nsid}){
 		$db->{currentUser} = $flickr->{user}->{nsid};
 		$db->{users}->{$db->{currentUser}} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr} = shared_clone $flickr->{user};
+		$db->{users}->{$db->{currentUser}}->{flickr} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{photosIDs} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} //= shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone $flickr->{user};
+		{
+			lock $syncing;
+			return if $syncing;
+			$syncing = 1;
+		}
+		async{
+			eval{
+				print "Start sync from flickr";
+				my $photos = $flickr->checkAllFlickrPhotos();
+				print "Sync from flickr finished";
+				$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = $photos;
+			};
+			lock $syncing;
+			$syncing = 0;
+		};
 	}else{
 		$db->{currentUser} = '';
 		$db->{users}->{$db->{currentUser}} //= shared_clone {};
 		$db->{users}->{$db->{currentUser}}->{flickr} = shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{photosIDs} = shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} = shared_clone {};
+		$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone {};
 	}
 	$db->{users}->{$db->{currentUser}}->{folders} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{files} //= shared_clone {};
@@ -84,7 +108,7 @@ my $loadUser = sub{
 	$syncDB->();
 };
 $db->{users} //= shared_clone {};
-$flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr} if ($db->{currentUser});
+$flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr}->{usr} if $db->{currentUser};
 $loadUser->();
 $syncDB->();
 
@@ -101,7 +125,7 @@ $threads{filesT} = threads->create({exit => 'threads_only'}, sub {
 		eval{
 			while (my $filename = $filesQ->dequeue()){
 				my $mtime =  (stat($filename))[9];
-				if(defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
+				if(0 and defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
 					and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime){
 					print "File $filename was previously uploaded and was not modified since then";
 				}else{
@@ -120,7 +144,7 @@ $threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
 			while (my $file = $fileIDQ->dequeue()){
 				print "File=>",$file->{filename};
 				my $id = __getFileID($file->{filename});
-				if ($db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
+				if (0 and $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
 					my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
 					if( $file->{filename} =~ /^re$/i){
 						print "File $file->{filename} was previously uploaded and still have the same signature and same name";
@@ -143,7 +167,7 @@ $threads{checkFlickrT} = threads->create({exit => 'threads_only'}, sub {
 	while(1){
 		eval{
 			while (my $file = $checkFlickrQ->dequeue()){
-				if (0 == $flickr->checkFlickrPhoto($file->{id})){
+				unless (defined $db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs}->{$file->{id}}){
 					$uploadQ->enqueue($file);
 				}else{
 					print "File ($file->{filename}) already on flick. Won't duplicate";
@@ -163,9 +187,10 @@ $threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
 		eval{
 			while (my $file = $uploadQ->dequeue()){
 				my @localtags = (
+				  $file->{id},
 					qq|dir:filename="$file->{filename}"|,
 					qq|meta:id="$file->{id}"|,
-					q|time:modification="$file->{mtime}"|,
+					qq|time:modification="$file->{mtime}"|,
 					map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file->{filename}
 				);
 				#pop @localtags; #discard filename from dir:step tags
@@ -341,8 +366,8 @@ sub  __hideAskAuthPanel{
 
 sub __setStatus{
 	my ($self) = @_;
-	$self->SetStatusText('User ' .  ($db->{users}->{$db->{currentUser}}->{flickr}->{fullname}
-	  || $db->{users}->{$db->{currentUser}}->{flickr}->{username}),0);
+	$self->SetStatusText('User ' .  ($db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{fullname}
+	  || $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{username}),0);
 }
 
 ######end of manual generated functions#########################
@@ -444,7 +469,7 @@ sub new {
 			$event->Skip;
 	});
 
-	if(defined $db->{users}->{$db->{currentUser}}->{flickr}->{auth_token}){
+	if(defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{auth_token}){
 		$self->__showMainPanel();
 		$self->__setStatus();
 		$loadUser->();
