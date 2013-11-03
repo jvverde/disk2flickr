@@ -94,21 +94,17 @@ sub checkFlickrPhoto{
 }
 sub checkAllFlickrPhotos{
 	my ($self) = @_;
-	print "Check All photos";
 	my $q = Thread::Queue->new(); #queue
 	my $wait :shared = 1;
 	my %result :shared = ();
 	$result{filesIDs} = shared_clone {};
 	$result{photoIDs} = shared_clone {};
 	async{
-		my $cnt = 0;
 		while(my $photos = $q->dequeue()){
-			#print Dumper $photos;
 			foreach (keys %$photos){
 				my $mtags = $photos->{$_}->{'machine_tags'};
 				my @mtags = split /\s+/, $mtags;
 				my %tags = map{split /\s*=\s*/,$_} @mtags;
-				#print Dumper \%tags;
 				$result{photoIDs}->{$_} = shared_clone {
 					mtags =>  \%tags,
 					tagID => $tags{'meta:id'},
@@ -118,27 +114,29 @@ sub checkAllFlickrPhotos{
 				$result{filesIDs}->{$tags{'meta:id'}} //= shared_clone [];
 				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $result{photoIDs}->{$_};
 			}
-			#print Dumper \%result;
 		}
 		lock($wait);
 		$wait = 0;
 		cond_signal($wait);
 	};
 	my $cnt = 1;
-	while(1){
-		my $response = $api->execute_method('flickr.photos.search', {
-		  user_id => $self->{user}->{nsid},
-		  auth_token => $self->{user}->{auth_token},
-		  extras => 'machine_tags',
-		  per_page => 500,
-		  page => $cnt++
-		});
-		my $answer  = $response->decoded_content(charset => 'none');
-		my $result = $xs->XMLin($answer);
-		print Dumper $result and last if $result->{stat} ne 'ok';
-		$q->enqueue($result->{photos}->{photo});
-	  last if $result->{photos}->{page} >= $result->{photos}->{pages};
+	eval {
+		while(1){
+			my $response = $api->execute_method('flickr.photos.search', {
+			  user_id => $self->{user}->{nsid},
+			  auth_token => $self->{user}->{auth_token},
+			  extras => 'machine_tags',
+			  per_page => 500,
+			  page => $cnt++
+			});
+			my $answer  = $response->decoded_content(charset => 'none');
+			my $result = $xs->XMLin($answer);
+			print Dumper $result and last if $result->{stat} ne 'ok';
+			$q->enqueue($result->{photos}->{photo});
+		  last if $result->{photos}->{page} >= $result->{photos}->{pages};
+		}
 	};
+	warn $@ if $@;
 	lock($wait);
 	$q->enqueue(undef);
   cond_wait($wait) until $wait == 0;

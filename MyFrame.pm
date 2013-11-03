@@ -37,7 +37,8 @@ my $home = File::HomeDir->my_home;
 
 
 my $dbfile = qq|$home/.disk2flick|;
-my $json  = JSON->new->utf8->pretty;
+#my $json  = JSON->new->utf8->pretty;
+my $json  = JSON->new->utf8;
 my $db = shared_clone do{
 	if (-r $dbfile){
 		local $/;
@@ -51,9 +52,12 @@ my $db = shared_clone do{
 	}
 };
 
-#lock_store {}, $dbfile unless -r $dbfile;
-#my $dbobj = lock_retrieve($dbfile) || {};
 $db->{cnt}++;
+$db->{users} //= shared_clone {};
+$flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr}->{usr}
+	if $db->{currentUser}
+		and defined $db->{users}->{$db->{currentUser}}
+		and defined $db->{users}->{$db->{currentUser}}->{flickr};
 
 #print Dumper $db;
 
@@ -62,55 +66,53 @@ my $syncDB = sub{
 	print F $json->encode($db);
 	close F;
 };
-my $removeUser = sub{
-	$db->{currentUser} = '';
-	$syncDB->();
-};
 
-my $syncing :shared = 0;
-my $loadUser = sub{
-	if(defined $flickr and defined $flickr->{user} and defined $flickr->{user}->{nsid}){
-		$db->{currentUser} = $flickr->{user}->{nsid};
-		$db->{users}->{$db->{currentUser}} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{photosIDs} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone $flickr->{user};
-		{
-			lock $syncing;
-			return if $syncing;
-			$syncing = 1;
-		}
-		async{
-			eval{
-				print "Start sync from flickr";
-				my $photos = $flickr->checkAllFlickrPhotos();
-				print "Sync from flickr finished";
-				$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = $photos;
-			};
-			lock $syncing;
-			$syncing = 0;
-		};
-	}else{
-		$db->{currentUser} = '';
-		$db->{users}->{$db->{currentUser}} //= shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr} = shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{photosIDs} = shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} = shared_clone {};
-		$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone {};
+my $syncingFlickr :shared = 0;
+sub syncFlickr{
+	{ #create a local scope for lock
+		lock $syncingFlickr;
+		return if $syncingFlickr;
+		$syncingFlickr = 1;
 	}
+	async{
+		eval{
+			print "Start sync from flickr for user $db->{currentUser}";
+			my $photos = $flickr->checkAllFlickrPhotos();
+			print "Sync from flickr finished";
+			$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = $photos;
+		};
+		warn $@ if $@;
+		lock $syncingFlickr;
+		$syncingFlickr = 0;
+	};
+}
+sub checkShared{
+	$db->{users}->{$db->{currentUser}} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{flickr} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{flickr}->{photos} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{photosIDs} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone($flickr->{user} // {});
 	$db->{users}->{$db->{currentUser}}->{folders} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{files} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{fileIDs} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{photoIDs} //= shared_clone {};
+}
+my $loadUser = sub{
+	$db->{currentUser} = $flickr->{user}->{nsid}
+		if(defined $flickr->{user} and defined $flickr->{user}->{nsid});
+	$db->{currentUser} //= '';
+	checkShared();
+	syncFlickr() if $db->{currentUser} ne '';
 	$syncDB->();
 };
-$db->{users} //= shared_clone {};
-$flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr}->{usr} if $db->{currentUser};
+my $removeUser = sub{
+	$db->{currentUser} = '';
+	checkShared();
+	$syncDB->();
+};
+
 $loadUser->();
-$syncDB->();
 
 sub texit{
 	print "Exit thread\n";
@@ -143,7 +145,7 @@ $threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
 		eval{
 			while (my $file = $fileIDQ->dequeue()){
 				print "File=>",$file->{filename};
-				my $id = __getFileID($file->{filename});
+				my $id = computeFileID($file->{filename});
 				if (0 and $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
 					my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
 					if( $file->{filename} =~ /^re$/i){
@@ -212,37 +214,8 @@ $threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
 		warn "$@\nI will Try again";
 	}
 });
-# sub __upload{
-# 	my ($file,@tags) = @_;
-# 	print "1-Upload file $file";
-# 	my $mtime =  (stat($file))[9];
-# 	return if defined $db->{filename} and $db->{filename} eq $mtime;
-# 	print "2-Upload file $file";
-# 	my $id = __getFileID($file);
-# 	return if defined $db->{ids}->{$id};
-# 	print "3-Upload file $file";
-# 	if ($flickr->checkFlickrPhoto($id) == 0){ #if not yet on flickr, upload
-# 		my @localtags = (
-# 			qq|dir:path="$file"|,
-# 			qq|meta:id="$id"|,
-# 			q|time:modification="|.localtime($mtime).q|"|,
-# 			map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file
-# 		);
-# 		pop @localtags; #discard filename from dir:step tags
 
-# 		my $photoid = $flickr->upload($file,@tags, @localtags)
-# 			or warn "Failed to upload $file" and return;
-# 		print "File $file uploaded to flickr (photoid = $photoid)";
-# 		$db->{ids}->{$id} = $photoid;
-# 	}else{
-# 		print "File $file ($id) is already on flickr";
-# 		$db->{ids}->{$id} = 0;
-# 	}
-# 	$db->{filename} = $mtime;
-# 	store $db, $dbfile;
-# }
-
-sub __getFileID{
+sub computeFileID{
 	warn(q|getFileID: File not defined|) and return undef unless defined $_[0];
 	warn(q|getFileID: File not $_[0] found|) and return undef unless -e $_[0];
 	my $sha = Digest::SHA->new();
@@ -256,14 +229,14 @@ sub getFolder{
 	print qq|Get dir $dir|;
 	if ($dir =~ $pattern){
 		print qq|backup dir $dir|;
-		__backup($dir,@tags);
+		backup($dir,@tags);
 	}
-	__getSubFolders($dir);
+	getSubFolders($dir);
 }
 
 my $getFolder = \&getFolder;
 
-sub __getSubFolders{
+sub getSubFolders{
 	my $dir = shift;
 	opendir DIR, $dir or warn qq|Nao foi possivel abrir o directorio $dir| and return;
 	my @subdirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
@@ -273,7 +246,7 @@ sub __getSubFolders{
 	}
 }
 
-sub __backup{
+sub backup{
 	my ($dir,@tags) = @_;
 
 	opendir DIR, $dir or warn qq|'nao foi possivel abrir o directorio corrente'|;
@@ -284,7 +257,6 @@ sub __backup{
 		print "file=$path";
 		eval{
 			$filesQ->enqueue($path);
-			#__upload($path,@tags);
 		};
 		warn $@ if $@;
 		exit if $stop;
@@ -298,10 +270,23 @@ $threads{browseT} = threads->create({exit => 'threads_only'}, sub {
 			while (my $folder = $foldersQ->dequeue()){
 				getFolder($folder);
 			}
-		}
+		};
+		threads->exit() unless $@;
+		warn "$@\nI will Try again";
 	}
 });
 
+my $stopThreads = sub{
+	$filesQ->end;
+	$fileIDQ->end;
+	$checkFlickrQ->end;
+	$uploadQ->end;
+	$foldersQ->end;
+	foreach(keys %threads){
+		print "wait $_";
+		$threads{$_}->join();
+	}
+};
 ######################End of my code ######################################
 
 
@@ -625,6 +610,7 @@ sub do_logout {
 
 sub do_exit {
 	my ($self, $event) = @_;
+	$stopThreads->();
 	$syncDB->();
 	$self->Close;
 	return $event->Skip;
@@ -755,6 +741,7 @@ sub do_backup {
 
 sub do_close {
 	my ($self, $event) = @_;
+	$stopThreads->();
 	$syncDB->();
 	$self->Close;
 	return $event->Skip;
