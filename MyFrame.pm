@@ -2,7 +2,6 @@
 #
 # To get wxPerl visit http://wxPerl.sourceforge.net/
 #
-
 use Wx 0.15 qw[:allclasses];
 use strict;
 use MyFlickr;
@@ -15,6 +14,8 @@ use Thread::Queue;
 #use Thread::Semaphore;
 use Data::Dumper;
 use JSON;
+use Encode::Locale;
+use Encode;
 ######################my code ######################################
 
 $\ = "\n";
@@ -37,17 +38,21 @@ my $home = File::HomeDir->my_home;
 my $dbfile = qq|$home/.disk2flick|;
 #my $json  = JSON->new->utf8->pretty;
 my $json  = JSON->new->utf8;
-my $db = shared_clone do{
-	if (-r $dbfile){
-		local $/;
-	  open F, '<', $dbfile;
-	  my $json_text   = <F>;
-	  close F;
-	  $json->decode( $json_text );
-	}else{
-		{}
-	}
-};
+sub openDB{
+  my ($file) = @_;
+  return {} unless -r $file;  
+  my $result = {};
+  eval{
+	local $/;
+	open F, '<', "$file" or die "Cannot open $file";
+	my $json_text   = <F>;
+	close F;
+	$result = $json->decode( $json_text );
+  };
+  warn $@ if $@;
+  return $result;
+}
+my $db = shared_clone openDB($dbfile);
 
 $db->{cnt}++;
 $db->{users} //= shared_clone {};
@@ -77,6 +82,7 @@ sub syncFlickr{
 			my $photos = $flickr->checkAllFlickrPhotos();
 			print "Sync from flickr finished";
 			$db->{users}->{$db->{currentUser}}->{flickr}->{photos} = $photos;
+			$db->{users}->{$db->{currentUser}}->{lastsync} = time;
 		};
 		warn $@ if $@;
 		lock $syncingFlickr;
@@ -95,13 +101,14 @@ sub checkShared{
 	$db->{users}->{$db->{currentUser}}->{files} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{fileIDs} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{photoIDs} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{lastsync} //= 0;
 }
 my $loadUser = sub{
 	$db->{currentUser} = $flickr->{user}->{nsid}
 		if(defined $flickr->{user} and defined $flickr->{user}->{nsid});
 	$db->{currentUser} //= '';
 	checkShared();
-	syncFlickr() if $db->{currentUser} ne '';
+	syncFlickr() if $db->{currentUser} ne '' and time - $db->{users}->{$db->{currentUser}}->{lastsync} > 3600;
 	$syncDB->();
 };
 my $removeUser = sub{
@@ -196,7 +203,7 @@ $threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
 				#pop @localtags; #discard filename from dir:step tags
 				print "Prepare to upload $file->{filename}";
 				my $photoid = $flickr->upload($file->{filename},@tags, @localtags)
-					or warn "Failed to upload $file" and next;
+					or warn "Failed to upload $file->{filename}" and next;
 				print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
 				#$db->{ids}->{$db->{users}->{nsid}}->{$file->{id}} = $photoid;
 				$file->{photoid} = $photoid;
@@ -236,29 +243,35 @@ my $getFolder = \&getFolder;
 
 sub getSubFolders{
 	my $dir = shift;
-	opendir DIR, $dir or warn qq|Nao foi possivel abrir o directorio $dir| and return;
-	my @subdirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
-	closedir DIR;
-	foreach my $subdir (@subdirs){
-		getFolder(qq|$dir/$subdir|);
-	}
+	eval{
+		opendir DIR, $dir or die qq|Wasn't possible to open folder $dir : $!|;
+		my @subdirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
+		closedir DIR;
+		foreach my $subdir (@subdirs){
+			getFolder(qq|$dir/$subdir|);
+		}
+	};
+	warn $@ if $@;
 }
 
 sub backup{
 	my ($dir,@tags) = @_;
 
-	opendir DIR, $dir or warn qq|'nao foi possivel abrir o directorio corrente'|;
+	eval{
+		opendir DIR, $dir or die qq|Wasn't possible to open folder $dir : $!|;
 
-	my @files = grep {/\.(jpg|png)$/i} readdir DIR;
-	foreach (@files){
-		my $path = abs_path(qq|$dir/$_|);
-		print "file=$path";
-		eval{
-			$filesQ->enqueue($path);
-		};
-		warn $@ if $@;
-		exit if $stop;
-	}
+		my @files = grep {/\.(jpg|png)$/i} readdir DIR;
+		foreach (@files){
+			my $path = abs_path(qq|$dir/$_|);
+			print "file=$path";
+			eval{
+				$filesQ->enqueue($path);
+			};
+			warn $@ if $@;
+			exit if $stop;
+		}
+	};
+	warn $@ if $@;
 }
 
 $threads{browseT} = threads->create({exit => 'threads_only'}, sub {
@@ -268,9 +281,10 @@ $threads{browseT} = threads->create({exit => 'threads_only'}, sub {
 			while (my $folder = $foldersQ->dequeue()){
 				{
 					lock $syncingFlickr;
-  				cond_wait($syncingFlickr) while($syncingFlickr);
-  			}
-				getFolder($folder);
+					cond_wait($syncingFlickr) while($syncingFlickr);
+				}
+				my $foldername = encode(locale => $folder);
+				getFolder($foldername);
 			}
 		};
 		threads->exit() unless $@;
