@@ -84,6 +84,7 @@ sub syncFlickr{
 		warn $@ if $@;
 		lock $syncingFlickr;
 		$syncingFlickr = 0;
+		cond_signal($syncingFlickr);
 	};
 }
 sub checkShared{
@@ -268,6 +269,10 @@ $threads{browseT} = threads->create({exit => 'threads_only'}, sub {
 	while(1){
 		eval{
 			while (my $folder = $foldersQ->dequeue()){
+				{
+					lock $syncingFlickr;
+  				cond_wait($syncingFlickr) while($syncingFlickr);
+  			}
 				getFolder($folder);
 			}
 		};
@@ -351,8 +356,25 @@ sub  __hideAskAuthPanel{
 
 sub __setStatus{
 	my ($self) = @_;
-	$self->SetStatusText('User ' .  ($db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{fullname}
-	  || $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{username}),0);
+	if ($db->{currentUser} ne ''){
+		$self->SetStatusText(
+		  'User '
+		  .  $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{fullname}
+		  . '('
+		  . $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{username}
+			. ')'
+		,0);
+	}else{
+				$self->SetStatusText('The user is not yet authorized',0);
+	}
+}
+
+sub __fillFoldersList{
+	my ($self) = @_;
+	my $p = 0;
+	foreach (sort keys $db->{users}->{$db->{currentUser}}->{folders}){
+		$self->{foldersList}->InsertStringItem($p++,$_);
+	}
 }
 
 ######end of manual generated functions#########################
@@ -446,29 +468,24 @@ sub new {
 
 	Wx::Event::EVT_CLOSE($self,sub{
 			my ($self, $event) = @_;
-			foreach(keys %threads){
-				$threads{$_}->kill('SIGKILL');
-			}
+			$stopThreads->();
 			$syncDB->();
 			print "Goodby";
 			$event->Skip;
 	});
-
-	if(defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{auth_token}){
+	if($db->{currentUser} ne ''
+	   	and defined $db->{users}->{$db->{currentUser}}
+	   	and defined $db->{users}->{$db->{currentUser}}->{flickr}
+	  	and defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}
+	   	and defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{auth_token}){
 		$self->__showMainPanel();
 		$self->__setStatus();
-		$loadUser->();
-		my $p = 0;
-		foreach (sort keys $db->{users}->{$db->{currentUser}}->{folders}){
-					$self->{foldersList}->InsertStringItem($p++,$_);
-		}
+		$self->__fillFoldersList();
 	}else{
 		$self->__showLoginPanel();
 		$self->SetStatusText('The user is not yet authorized',0);
 	}
-
-    return $self;
-
+  return $self;
 }
 
 
@@ -610,8 +627,6 @@ sub do_logout {
 
 sub do_exit {
 	my ($self, $event) = @_;
-	$stopThreads->();
-	$syncDB->();
 	$self->Close;
 	return $event->Skip;
 # wxGlade: MyFrame::do_exit <event_handler>
@@ -741,8 +756,6 @@ sub do_backup {
 
 sub do_close {
 	my ($self, $event) = @_;
-	$stopThreads->();
-	$syncDB->();
 	$self->Close;
 	return $event->Skip;
 # wxGlade: MyFrame::do_close <event_handler>
