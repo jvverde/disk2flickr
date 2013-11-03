@@ -8,13 +8,11 @@ use strict;
 use MyFlickr;
 use Digest::SHA qw(sha256);
 use File::HomeDir;
-use Storable qw(lock_retrieve lock_store freeze thaw);
-use File::Copy qw(cp);
 use Cwd qw{abs_path};
 use threads;
 use threads::shared;
 use Thread::Queue;
-use Thread::Semaphore;
+#use Thread::Semaphore;
 use Data::Dumper;
 use JSON;
 ######################my code ######################################
@@ -45,7 +43,6 @@ my $db = shared_clone do{
 	  open F, '<', $dbfile;
 	  my $json_text   = <F>;
 	  close F;
-		cp $dbfile, qq|$dbfile.old|;
 	  $json->decode( $json_text );
 	}else{
 		{}
