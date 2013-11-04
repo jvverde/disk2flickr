@@ -139,8 +139,8 @@ sub checkAllFlickrPhotos{
 	warn $@ if $@;
 	lock($wait);
 	$q->enqueue(undef);
-  cond_wait($wait) until $wait == 0;
-  return \%result;
+	cond_wait($wait) until $wait == 0;
+	return \%result;
 }
 sub upload{
 	my ($self,$file,@tags) = @_;
