@@ -147,6 +147,7 @@ my $removeUser = sub{
 
 my $pendigFiles :shared = 0;
 my $uploadFiles :shared = 0;
+my $uploadFinished :shared = 0;
 
 sub countUploadedFiles{
 	lock $uploadFiles;
@@ -175,7 +176,7 @@ sub getFolder{
 	my @steps = split /\/|\\/, $dir;
 	my $step = $steps[$#steps];
 	if ($step =~ qr/$matching_pattern/){
-		uploadDir($dir,@tags);
+		getFiles($dir);
 	}
 	getSubFolders($dir);
 }
@@ -193,8 +194,8 @@ sub getSubFolders{
 	warn $@ if $@;
 }
 
-sub uploadDir{
-	my ($dir,@tags) = @_;
+sub getFiles{
+	my ($dir) = @_;
 	eval{
 		opendir DIR, $dir or die qq|Wasn't possible to open folder $dir : $!|;
 
@@ -225,7 +226,9 @@ my $startThreads = sub{
 				};
 				(warn "$@\nI will Try again"), next if $@;
 				$filesQ->enqueue(undef) if defined $filesQ->pending();
+				$releaseThisThread->();
 				threads->exit();
+				last;
 			}
 		}),
 		threads->create({exit => 'threads_only'}, sub {
@@ -234,7 +237,8 @@ my $startThreads = sub{
 					while (defined(my $filename = $filesQ->dequeue())){
 						my $mtime =  (stat($filename))[9];
 						if(defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
-							and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime){
+							and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime
+						){
 							print "File $filename was previously uploaded and was not modified since then";
 						}else{
 							$fileIDQ->enqueue({filename=>$filename,mtime=>$mtime}) if defined $fileIDQ->pending();
@@ -243,7 +247,9 @@ my $startThreads = sub{
 				};
 				(warn "$@\nI will Try again"), next if $@;
 				$fileIDQ->enqueue(undef) if defined $fileIDQ->pending();
+				$releaseThisThread->();
 				threads->exit();
+				last;
 			}
 		}),
 		threads->create({exit => 'threads_only'}, sub {
@@ -251,12 +257,13 @@ my $startThreads = sub{
 				eval{
 					while (defined(my $file = $fileIDQ->dequeue())){
 						my $id = computeFileID($file->{filename});
-						if ($db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
-							my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
-							if( $file->{filename} =~ /^re$/i){
-								print "File $file->{filename} was previously uploaded and still have the same signature and same name";
+						if (defined $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
+							if( defined $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}
+								and lc $file->{filename} eq lc $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}
+							){
+								print "File $file->{filename} was previously uploaded";
 							}else{
-								print "File $file->{filename} was previously uploaded and still have the same signature but a diferente name $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
+								print "File $file->{filename} was previously uploaded under a different name: $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
 								$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
 							}
 						}else{
@@ -267,7 +274,9 @@ my $startThreads = sub{
 				};
 				(warn "$@\nI will Try again"), next if $@;
 				$checkFlickrQ->enqueue(undef) if defined $checkFlickrQ->pending();
+				$releaseThisThread->();
 				threads->exit();
+				last;
 			}
 		}),
 		threads->create({exit => 'threads_only'}, sub {
@@ -279,17 +288,20 @@ my $startThreads = sub{
 							countPendingFiles();
 						}else{
 							print "File ($file->{filename}) already on flick. Won't duplicate";
-							$db->{users}->{$db->{currentUser}}->{files} = shared_clone $file;
-							$db->{users}->{$db->{currentUser}}->{fileIDs} = shared_clone $file;
+							$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}}
+								= $db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}}
+								= shared_clone $file;							
 						}
 					}
 				};
 				(warn "$@\nI will Try again"), next if $@;
 				$uploadQ->enqueue(undef) if defined $uploadQ->pending();
+				$releaseThisThread->();
 				threads->exit();
+				last;
 			}
 		}),
-		threads->create({exit => 'threads_only'}, sub {
+		map {threads->create({exit => 'threads_only'}, sub {
 			while(1){
 				eval{
 					while (defined(my $file = $uploadQ->dequeue())){
@@ -304,17 +316,20 @@ my $startThreads = sub{
 						my $photoid = $flickr->upload($file->{filename},@tags, @localtags) or next;
 						print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
 						$file->{photoid} = $photoid;
-						$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
-						$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = shared_clone $file;
-						$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = shared_clone $file;
+						$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}}
+							= $db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}}
+							= $db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} 
+							= shared_clone $file;
 						countUploadedFiles();				
 						$syncDB->();
 					}
 				};
 				(warn "$@\nI will Try again"), next if $@;
+				$releaseThisThread->();
 				threads->exit();
+				last;
 			}
-		})
+		})} (0..1) 
 	)
 };
 
@@ -517,6 +532,8 @@ sub go_backup {
 	}
 	$pendigFiles = 0;
 	$uploadFiles = 0;
+	my $progressText :shared = $self->{uploadProgressBarSizer_staticbox}->GetLabelText();
+	$progressText =~ s/[0-9)(:].*$//;
 	async{ #Thread #pending: Adjust progressbar as files are waiting update
 		my $p = $pendigFiles;
 		while(1){
@@ -524,6 +541,9 @@ sub go_backup {
 			cond_wait($pendigFiles) until $pendigFiles != $p;
 			last unless $pendigFiles >= 0;
 			$self->{uploadProgressBar}->SetRange($p = $pendigFiles);
+			$self->{uploadProgressBarSizer_staticbox}->SetLabel(
+				qq|$progressText: ($uploadFiles of $pendigFiles) done|
+			);
 		}
 		$releaseThisThread->();
 	};
@@ -534,13 +554,19 @@ sub go_backup {
 			cond_wait($uploadFiles) until $uploadFiles != $u;
 			last unless $uploadFiles >= 0;
 			$self->{uploadProgressBar}->SetValue($u = $uploadFiles);
+			$self->{uploadProgressBarSizer_staticbox}->SetLabel(
+				qq|$progressText: ($uploadFiles of $pendigFiles) done|
+			);
 		}
 		$releaseThisThread->();
 	};
 	async{
 		$self->{uploadProgressPanel}->Show(1);
 		$self->{uploadProgressPanel}->Raise();
-		$wait4TheseThreads2Join->($startThreads->()); #start threads and wait;
+		$startThreads->();
+		#$wait4TheseThreads2Join->($startThreads->()); #start threads and wait;ock 
+		lock $uploadFinished;
+		cond_wait $uploadFinished until $uploadFinished == 1;
 		$self->{uploadProgressPanel}->Hide();
 		my $p = $pendigFiles;
 		my $u = $uploadFiles;

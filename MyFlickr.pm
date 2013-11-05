@@ -104,14 +104,15 @@ sub checkAllFlickrPhotos{
 				my $mtags = $photos->{$_}->{'machine_tags'};
 				my @mtags = split /\s+/, $mtags;
 				my %tags = map{split /\s*=\s*/,$_} @mtags;
-				$result{photoIDs}->{$_} = shared_clone {
+				my $photo = shared_clone {
 					mtags =>  \%tags,
 					tagID => $tags{'meta:id'},
 					photoID => $_,
 					photo => $photos->{$_}
 				};
+				#$result{photoIDs}->{$_} = $photo;
 				$result{filesIDs}->{$tags{'meta:id'}} //= shared_clone [];
-				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $result{photoIDs}->{$_};
+				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $photo;
 			}
 		}
 	};
