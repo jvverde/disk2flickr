@@ -95,11 +95,10 @@ sub checkFlickrPhoto{
 sub checkAllFlickrPhotos{
 	my ($self) = @_;
 	my $q = Thread::Queue->new(); #queue
-	my $wait :shared = 1;
 	my %result :shared = ();
 	$result{filesIDs} = shared_clone {};
 	$result{photoIDs} = shared_clone {};
-	async{
+	my $processResultT = async{
 		while(my $photos = $q->dequeue()){
 			foreach (keys %$photos){
 				my $mtags = $photos->{$_}->{'machine_tags'};
@@ -115,12 +114,9 @@ sub checkAllFlickrPhotos{
 				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $result{photoIDs}->{$_};
 			}
 		}
-		lock($wait);
-		$wait = 0;
-		cond_signal($wait);
 	};
-	my $cnt = 1;
 	eval {
+		my $cnt = 1;
 		while(1){
 			my $response = $api->execute_method('flickr.photos.search', {
 			  user_id => $self->{user}->{nsid},
@@ -133,13 +129,12 @@ sub checkAllFlickrPhotos{
 			my $result = $xs->XMLin($answer);
 			print Dumper $result and last if $result->{stat} ne 'ok';
 			$q->enqueue($result->{photos}->{photo});
-		  last if $result->{photos}->{page} >= $result->{photos}->{pages};
+			last if $result->{photos}->{page} >= $result->{photos}->{pages};
 		}
+		$q->enqueue(undef); #flag the end of results
+		$processResultT->join();
 	};
 	warn $@ if $@;
-	lock($wait);
-	$q->enqueue(undef);
-	cond_wait($wait) until $wait == 0;
 	return \%result;
 }
 sub upload{

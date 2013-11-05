@@ -21,7 +21,7 @@ use Encode;
 $\ = "\n";
 
 my $flickr = MyFlickr->new();
-my $pattern = qr/./;
+my $matching_pattern :shared = '.';
 my $stop = 0;
 my @tags = ();
 
@@ -69,11 +69,36 @@ my $syncDB = sub{
 	close F;
 };
 
+######some stuff to deal with the resources release of finished threads#####
+my @finishedThreads :shared = ();
+my $releaseResourcesT = async{
+	while(1){
+		lock @finishedThreads;
+		cond_wait(@finishedThreads) until @finishedThreads > 0;
+		foreach(@finishedThreads){
+			threads->exit() unless defined $_;
+			my $t = threads->object($_);
+			$t->join() if defined $t;
+		}
+		undef @finishedThreads;
+	}
+};
+
+my $releaseThisThread = sub{ #should me called from a thread which is finishing 
+	lock @finishedThreads;
+	push @finishedThreads, threads->self()->tid();
+	cond_signal @finishedThreads;
+};
+my $wait4TheseThreads2Join = sub{
+	$_->join() foreach(@_);
+};
+
+###sync from flickr stuff #####
 my $syncingFlickr :shared = 0;
 sub syncFlickr{
-	{ #create a local scope for lock
+	{ 
 		lock $syncingFlickr;
-		return if $syncingFlickr;
+		return if $syncingFlickr; #ignore the request if a sync is already in progress
 		$syncingFlickr = 1;
 	}
 	async{
@@ -88,6 +113,7 @@ sub syncFlickr{
 		lock $syncingFlickr;
 		$syncingFlickr = 0;
 		cond_signal($syncingFlickr);
+		$releaseThisThread->();
 	};
 }
 sub checkShared{
@@ -98,6 +124,8 @@ sub checkShared{
 	$db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{flickr}->{usr} = shared_clone($flickr->{user} // {});
 	$db->{users}->{$db->{currentUser}}->{folders} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{options} //= shared_clone {};
+	$db->{users}->{$db->{currentUser}}->{options}->{filter} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{files} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{fileIDs} //= shared_clone {};
 	$db->{users}->{$db->{currentUser}}->{photoIDs} //= shared_clone {};
@@ -117,22 +145,18 @@ my $removeUser = sub{
 	$syncDB->();
 };
 
-my $pendigFilesUpdated :shared = 0;
-my $uploadFilesUpdated :shared = 0;
 my $pendigFiles :shared = 0;
 my $uploadFiles :shared = 0;
 
 sub countUploadedFiles{
-	lock $uploadFilesUpdated;
-	$uploadFilesUpdated = 1;
+	lock $uploadFiles;
 	$uploadFiles++;
-	cond_signal $uploadFilesUpdated;
+	cond_signal $uploadFiles;
 }
 sub countPendingFiles{
-	lock $pendigFilesUpdated;
-	$pendigFilesUpdated = 1;
+	lock $pendigFiles;
 	$pendigFiles++;
-	cond_signal $pendigFilesUpdated;
+	cond_signal $pendigFiles;
 }
 
 $loadUser->();
@@ -148,8 +172,9 @@ sub computeFileID{
 sub getFolder{
 	my $dir = shift;
 	print qq|Get dir $dir|;
-	if ($dir =~ $pattern){
-		print qq|uploadDir dir $dir|;
+	my @steps = split /\/|\\/, $dir;
+	my $step = $steps[$#steps];
+	if ($step =~ qr/$matching_pattern/){
 		uploadDir($dir,@tags);
 	}
 	getSubFolders($dir);
@@ -185,134 +210,125 @@ sub uploadDir{
 my %threads = ();
 
 my $startThreads = sub{
-
-	$threads{browseT} = threads->create({exit => 'threads_only'}, sub {
-		while(1){
-			eval{
-				while (defined(my $folder = $foldersQ->dequeue())){
-					{
-						lock $syncingFlickr;
-						cond_wait($syncingFlickr) while($syncingFlickr);
-					}
-					my $foldername = encode(locale => $folder);
-					getFolder($foldername);
-				}
-			};
-			(warn "$@\nI will Try again"), next if $@;
-			print "Send undef to filesQ";
-			$filesQ->enqueue(undef) if defined $filesQ->pending();
-			threads->exit();
-		}
-	});
-
-	$threads{filesT} = threads->create({exit => 'threads_only'}, sub {
-		while(1){
-			eval{
-				while (defined(my $filename = $filesQ->dequeue())){
-					my $mtime =  (stat($filename))[9];
-					if(0 and defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
-						and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime){
-						print "File $filename was previously uploaded and was not modified since then";
-					}else{
-						$fileIDQ->enqueue({filename=>$filename,mtime=>$mtime}) if defined $fileIDQ->pending();
-					}
-				}
-			};
-			(warn "$@\nI will Try again"), next if $@;
-			print "Send undef to fileIDQ";
-			$fileIDQ->enqueue(undef) if defined $fileIDQ->pending();
-			threads->exit();
-		}
-	});
-
-	$threads{filesIDT} = threads->create({exit => 'threads_only'}, sub {
-		while(1){
-			eval{
-				while (defined(my $file = $fileIDQ->dequeue())){
-					my $id = computeFileID($file->{filename});
-					if (0 and $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
-						my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
-						if( $file->{filename} =~ /^re$/i){
-							print "File $file->{filename} was previously uploaded and still have the same signature and same name";
-						}else{
-							print "File $file->{filename} was previously uploaded and still have the same signature but a diferente name $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
-							$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
+	return (
+		threads->create({exit => 'threads_only'}, sub {
+			while(1){
+				eval{
+					while (defined(my $folder = $foldersQ->dequeue())){
+						{
+							lock $syncingFlickr;
+							cond_wait($syncingFlickr) while($syncingFlickr);
 						}
-					}else{
-						$file->{id} = $id;
-						$checkFlickrQ->enqueue($file) if defined $checkFlickrQ->pending();
+						my $foldername = encode(locale => $folder);
+						getFolder($foldername);
 					}
-				}
-			};
-			(warn "$@\nI will Try again"), next if $@;
-			print "Send undef to checkFlickrQ";
-			$checkFlickrQ->enqueue(undef) if defined $checkFlickrQ->pending();
-			threads->exit();
-		}
-	});
-
-	$threads{checkFlickrT} = threads->create({exit => 'threads_only'}, sub {
-		while(1){
-			eval{
-				while (defined(my $file = $checkFlickrQ->dequeue())){
-					unless (defined $db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs}->{$file->{id}}){
-						$uploadQ->enqueue($file) if defined $uploadQ->pending();
-						countPendingFiles();
-					}else{
-						print "File ($file->{filename}) already on flick. Won't duplicate";
-						$db->{users}->{$db->{currentUser}}->{files} = shared_clone $file;
-						$db->{users}->{$db->{currentUser}}->{fileIDs} = shared_clone $file;
+				};
+				(warn "$@\nI will Try again"), next if $@;
+				$filesQ->enqueue(undef) if defined $filesQ->pending();
+				threads->exit();
+			}
+		}),
+		threads->create({exit => 'threads_only'}, sub {
+			while(1){
+				eval{
+					while (defined(my $filename = $filesQ->dequeue())){
+						my $mtime =  (stat($filename))[9];
+						if(defined $db->{users}->{$db->{currentUser}}->{files}->{$filename}
+							and $db->{users}->{$db->{currentUser}}->{files}->{$filename}->{mtime} eq $mtime){
+							print "File $filename was previously uploaded and was not modified since then";
+						}else{
+							$fileIDQ->enqueue({filename=>$filename,mtime=>$mtime}) if defined $fileIDQ->pending();
+						}
 					}
-				}
-			};
-			(warn "$@\nI will Try again"), next if $@;
-			print "Send undef to uploadQ";
-			$uploadQ->enqueue(undef) if defined $uploadQ->pending();
-			threads->exit();
-		}
-	});
+				};
+				(warn "$@\nI will Try again"), next if $@;
+				$fileIDQ->enqueue(undef) if defined $fileIDQ->pending();
+				threads->exit();
+			}
+		}),
+		threads->create({exit => 'threads_only'}, sub {
+			while(1){
+				eval{
+					while (defined(my $file = $fileIDQ->dequeue())){
+						my $id = computeFileID($file->{filename});
+						if ($db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}){
+							my $re = qr/$db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}/;
+							if( $file->{filename} =~ /^re$/i){
+								print "File $file->{filename} was previously uploaded and still have the same signature and same name";
+							}else{
+								print "File $file->{filename} was previously uploaded and still have the same signature but a diferente name $db->{users}->{$db->{currentUser}}->{fileIDs}->{$id}->{filename}";
+								$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
+							}
+						}else{
+							$file->{id} = $id;
+							$checkFlickrQ->enqueue($file) if defined $checkFlickrQ->pending();
+						}
+					}
+				};
+				(warn "$@\nI will Try again"), next if $@;
+				$checkFlickrQ->enqueue(undef) if defined $checkFlickrQ->pending();
+				threads->exit();
+			}
+		}),
+		threads->create({exit => 'threads_only'}, sub {
+			while(1){
+				eval{
+					while (defined(my $file = $checkFlickrQ->dequeue())){
+						unless (defined $db->{users}->{$db->{currentUser}}->{flickr}->{photos}->{filesIDs}->{$file->{id}}){
+							$uploadQ->enqueue($file) if defined $uploadQ->pending();
+							countPendingFiles();
+						}else{
+							print "File ($file->{filename}) already on flick. Won't duplicate";
+							$db->{users}->{$db->{currentUser}}->{files} = shared_clone $file;
+							$db->{users}->{$db->{currentUser}}->{fileIDs} = shared_clone $file;
+						}
+					}
+				};
+				(warn "$@\nI will Try again"), next if $@;
+				$uploadQ->enqueue(undef) if defined $uploadQ->pending();
+				threads->exit();
+			}
+		}),
+		threads->create({exit => 'threads_only'}, sub {
+			while(1){
+				eval{
+					while (defined(my $file = $uploadQ->dequeue())){
+						my @localtags = (
+						  $file->{id},
+							qq|dir:filename="$file->{filename}"|,
+							qq|meta:id="$file->{id}"|,
+							qq|time:modification="$file->{mtime}"|,
+							map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file->{filename}
+						);
+						#print "Prepare to upload $file->{filename}";
+						my $photoid = $flickr->upload($file->{filename},@tags, @localtags) or next;
+						print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
+						$file->{photoid} = $photoid;
+						$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
+						$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = shared_clone $file;
+						$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = shared_clone $file;
+						countUploadedFiles();				
+						$syncDB->();
+					}
+				};
+				(warn "$@\nI will Try again"), next if $@;
+				threads->exit();
+			}
+		})
+	)
+};
 
-	$threads{uploadT} = threads->create({exit => 'threads_only'}, sub {
-		while(1){
-			eval{
-				while (defined(my $file = $uploadQ->dequeue())){
-					my @localtags = (
-					  $file->{id},
-						qq|dir:filename="$file->{filename}"|,
-						qq|meta:id="$file->{id}"|,
-						qq|time:modification="$file->{mtime}"|,
-						map {qq|dir:step="$_"|} grep {/[^\s]/} split /\//, $file->{filename}
-					);
-					#print "Prepare to upload $file->{filename}";
-					my $photoid = $flickr->upload($file->{filename},@tags, @localtags) or next;
-					print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
-					$file->{photoid} = $photoid;
-					$db->{users}->{$db->{currentUser}}->{files}->{$file->{filename}} = shared_clone $file;
-					$db->{users}->{$db->{currentUser}}->{fileIDs}->{$file->{id}} = shared_clone $file;
-					$db->{users}->{$db->{currentUser}}->{photoIDs}->{$file->{photoid}} = shared_clone $file;
-					countUploadedFiles();				
-					$syncDB->();
-				}
-			};
-			(warn "$@\nI will Try again"), next if $@;
-			threads->exit();
-		}
-	});
-};
-my $joinThreads = sub{
-	foreach(keys %threads){
-		next unless $threads{$_}->is_running();
-		print "Wait for thread $_";
-		$threads{$_}->join();
-	}
-};
 my $stopThreads = sub{
 	$filesQ->end;
 	$fileIDQ->end;
 	$checkFlickrQ->end;
 	$uploadQ->end;
-	$foldersQ->end;
-	$joinThreads->();
+	{ #prepare to stop releaseResourcesT thread
+		lock @finishedThreads;
+		push @finishedThreads, (undef);
+		cond_signal @finishedThreads;
+	}
+	$wait4TheseThreads2Join->($releaseResourcesT);
 };
 ######################End of my code ######################################
 
@@ -374,9 +390,11 @@ sub  __hideAskAuthPanel{
 sub __setStatus{
 	my ($self) = @_;
 	if ($db->{currentUser} ne ''){
+		my $name = $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{fullname};
+		utf8::decode($name);
 		$self->SetStatusText(
 		  'User '
-		  .  $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{fullname}
+		  .  $name
 		  . '('
 		  . $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{username}
 			. ')'
@@ -386,20 +404,35 @@ sub __setStatus{
 	}
 }
 
-sub __fillFoldersList{
+sub __setUserOptions{
 	my ($self) = @_;
 	my $p = 0;
 	foreach (sort keys $db->{users}->{$db->{currentUser}}->{folders}){
 		$self->{foldersList}->InsertStringItem($p++,$_);
 	}
+	#$db->{users}->{$db->{currentUser}}->{options}
+	#$db->{users}->{$db->{currentUser}}->{options}->{filter} = shared_clone {some => $choice};
+	$self->{backupRecursiveOptionSomeChoiceValue}->ChangeValue( 
+		$db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{value}
+	) if defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}
+		and defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{value};
+	$self->{backupRecursiveOptionSomeChoiceName}->SetValue(
+		$db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{action}
+	) if defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}
+		and defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{action};
+	$self->{backupRecursiveOptionSome}->SetFocus()
+		if defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}
+		and defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{action}	
+		and defined $db->{users}->{$db->{currentUser}}->{options}->{filter}->{some}->{value};	
 }
 
-######end of manual generated functions#########################
+###############################
 
 sub new {
     my( $self) = @_;
 	$self = $self->SUPER::new();
 
+	$self->SetSize(Wx::Size->new(550, 450));
 	Wx::Event::EVT_CLOSE($self,sub{
 			my ($self, $event) = @_;
 			$stopThreads->();
@@ -414,37 +447,34 @@ sub new {
 	  	and defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}
 	   	and defined $db->{users}->{$db->{currentUser}}->{flickr}->{usr}->{auth_token}){
 		$self->__showMainPanel();
-		$self->__fillFoldersList();
+		$self->__setUserOptions();
 	}else{
 		$self->__showLoginPanel();
 	}
 	$self->__setStatus();
-	$self->{progressBar}->SetRange(100);
-	$self->{progressBar}->SetValue(0);
-
+	$self->{uploadProgressBar}->SetRange(100);
+	$self->{uploadProgressBar}->SetValue(0);
+	$self->{syncProgressPanel}->Hide();
+	$self->{uploadProgressPanel}->Hide();
 	return $self;
 }
 
 sub go_login {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$self->__showLoginPanel();
-	$event->Skip;
 }
 
-
 sub go_logout {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$removeUser->();
 	$syncDB->();
 	$self->__showLoginPanel();
 	$self->SetStatusText('The user is not authorized anymore',0);
-	return $event->Skip;
 }
-
 
 my $lastDirectory = "";
 sub go_browse {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	my $dlg = Wx::DirDialog->new(
 	  $self->{backupSubPanel},
 	  "Please, choose a folder to backup",
@@ -457,12 +487,10 @@ sub go_browse {
 		$self->{foldersList}->InsertStringItem($p,$lastDirectory);
 		$db->{users}->{$db->{currentUser}}->{folders}->{$lastDirectory} = time;
 	}
-	return $event->Skip;
 }
 
-
 sub go_remove_selected {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	my $removeFromDB = sub{
 		delete $db->{users}->{$db->{currentUser}}->{folders}->{$self->{foldersList}->GetItemText(shift)};
 	};
@@ -475,90 +503,148 @@ sub go_remove_selected {
 	}
 }
 
-
 sub go_remove_all {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$self->{foldersList}->ClearAll;
-	$db->{users}->{$db->{currentUser}}{folders} = {};
-	return $event->Skip;
+	$db->{users}->{$db->{currentUser}}{folders} =  shared_clone{};
 }
 
-
 sub go_backup {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	unless(defined $flickr->{user} and defined $flickr->{user}->{nsid}){
 		print "User not login";
-		return $self->go_login($event);
+		return $self->go_login();
 	}
-	my $count = $self->{foldersList}->GetItemCount;
-	my $i = 0;
-	$pendigFilesUpdated = 0;
-	$uploadFilesUpdated = 0;
 	$pendigFiles = 0;
 	$uploadFiles = 0;
-	async{
+	async{ #Thread #pending: Adjust progressbar as files are waiting update
+		my $p = $pendigFiles;
 		while(1){
-			lock($pendigFilesUpdated);
-			cond_wait($pendigFilesUpdated) until $pendigFilesUpdated == 1;
-			$self->{progressBar}->SetRange($pendigFiles);
+			lock($pendigFiles);
+			cond_wait($pendigFiles) until $pendigFiles != $p;
+			last unless $pendigFiles >= 0;
+			$self->{uploadProgressBar}->SetRange($p = $pendigFiles);
 		}
+		$releaseThisThread->();
+	};
+	async{ #Thread #update: update progessbar
+		my $u = $uploadFiles;
+		while(1){
+			lock($uploadFiles);
+			cond_wait($uploadFiles) until $uploadFiles != $u;
+			last unless $uploadFiles >= 0;
+			$self->{uploadProgressBar}->SetValue($u = $uploadFiles);
+		}
+		$releaseThisThread->();
 	};
 	async{
-		while(1){
-			lock($uploadFilesUpdated);
-			cond_wait($uploadFilesUpdated) until $uploadFilesUpdated == 1;
-			$self->{progressBar}->SetValue($uploadFiles);
+		$self->{uploadProgressPanel}->Show(1);
+		$self->{uploadProgressPanel}->Raise();
+		$wait4TheseThreads2Join->($startThreads->()); #start threads and wait;
+		$self->{uploadProgressPanel}->Hide();
+		my $p = $pendigFiles;
+		my $u = $uploadFiles;
+		{
+			lock $pendigFiles;
+			$pendigFiles = -1 -$u; #set condition to end the thread #pending
+			cond_signal $pendigFiles;
+		}		
+		{
+			lock $uploadFiles;
+			$uploadFiles = -1 -$p; #set condition to end the thread #update
+			cond_signal $uploadFiles;
 		}
+		$releaseThisThread->();
 	};
-	$startThreads->();
+	my $count = $self->{foldersList}->GetItemCount;
+	my $i = 0;
 	while($i < $count){
 		print $self->{foldersList}->GetItemText($i);
 		$foldersQ->enqueue($self->{foldersList}->GetItemText($i++));
 	}
 	$foldersQ->enqueue(undef); #signal the end of folders list
-	async{
-		$joinThreads->();
-		 $self->{progressBar}->Hide()
-	};
-	return $event->Skip;
 }
 
 sub go_exit {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$self->Close;
-	return $event->Skip;
 }
 
 sub go_close {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$self->Close;
-	return $event->Skip;
 }
-
 
 sub go_main {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$self->__showMainPanel();
-	return $event->Skip;
 }
-
 
 sub go_askAuth {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	$flickr->askAuth() or carp q|ask auth error|;
 	$self->__showCheckTokenPanel();
-	return  $event->Skip;
 }
 
-
 sub go_getToken {
-	my ($self, $event) = @_;
+	my ($self) = @_;
 	print 'Get token...';
 	$flickr->getToken() or return $self-> __showAskAuthPanel();
 	$self->__showMainPanel();
 	$loadUser->();
 	$self->__setStatus();
-	return $event->Skip;
 }
+
+sub go_matching_all{
+	$matching_pattern = '.+';
+	$db->{users}->{$db->{currentUser}}->{options}->{filter} = shared_clone {all => 1};	
+}
+sub _pattern{
+	my ($self) = @_;
+	my $choice = {};
+    my $action = $self->{backupRecursiveOptionSomeChoiceName}->GetValue();		
+    my $value = $self->{backupRecursiveOptionSomeChoiceValue}->GetValue();
+	if ($action eq 'is equal to'){
+		$matching_pattern = qq|^$value\$|;
+		$choice = {action => 'is equal to', value => $value};
+	}elsif($action eq 'not equal to'){
+		$matching_pattern = qq|^(?!$value\$).+\$|;	
+		$choice = {action => 'not equal to', value => $value};
+	}elsif($action eq 'contains'){
+		$matching_pattern = qq|$value|;	
+		$choice = {action => 'contains', value => $value};
+	}elsif($action eq 'not contains'){
+		$matching_pattern = qq|^(?!.*$value).|;	
+		$choice = {action => 'not contains', value => $value};
+	}elsif($action eq 'starts with'){
+		$matching_pattern = qq|^$value|;	
+		$choice = {action => 'starts with', value => $value};
+	}elsif($action eq 'not starts with'){
+		$matching_pattern = qq|^(?!$value).|;	
+		$choice = {action => 'not starts with', value => $value};
+	}elsif($action eq 'ends with'){
+		$matching_pattern = qq|$value\$|;	
+		$choice = {action => 'ends with', value => $value};
+	}elsif($action eq 'ends with'){
+		$matching_pattern = qq|^(?!.*$value\$).|;	
+		$choice = {action => 'ends with', value => $value};
+	}else{
+		$matching_pattern = qq|^\$|;	
+		$choice = {action => ''};
+	}
+	print $matching_pattern;
+	$db->{users}->{$db->{currentUser}}->{options}->{filter} = shared_clone {some => $choice};	
+}
+sub go_matching_some{
+	shift->_pattern;
+	#$matching_pattern = qr/^$/;
+}
+sub go_matching_action{
+	shift->_pattern;
+}
+sub go_matching_text_enter{
+	shift->_pattern;
+}
+
 1;
 
