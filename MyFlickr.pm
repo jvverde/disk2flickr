@@ -94,31 +94,11 @@ sub checkFlickrPhoto{
 }
 sub checkAllFlickrPhotos{
 	my ($self) = @_;
-	my $q = Thread::Queue->new(); #queue
-	my %result :shared = ();
-	$result{filesIDs} = shared_clone {};
-	$result{photoIDs} = shared_clone {};
-	my $processResultT = async{
-		while(my $photos = $q->dequeue()){
-			foreach (keys %$photos){
-				my $mtags = $photos->{$_}->{'machine_tags'};
-				my @mtags = split /\s+/, $mtags;
-				my %tags = map{split /\s*=\s*/,$_} @mtags;
-				my $photo = shared_clone {
-					mtags =>  \%tags,
-					tagID => $tags{'meta:id'},
-					photoID => $_,
-					photo => $photos->{$_}
-				};
-				#$result{photoIDs}->{$_} = $photo;
-				$result{filesIDs}->{$tags{'meta:id'}} //= shared_clone [];
-				push @{$result{filesIDs}->{$tags{'meta:id'}}}, $photo;
-			}
-		}
-	};
+	my $inFlickr = {};
 	eval {
 		my $cnt = 1;
-		while(1){
+		my $result;
+		do{
 			my $response = $api->execute_method('flickr.photos.search', {
 			  user_id => $self->{user}->{nsid},
 			  auth_token => $self->{user}->{auth_token},
@@ -127,16 +107,20 @@ sub checkAllFlickrPhotos{
 			  page => $cnt++
 			});
 			my $answer  = $response->decoded_content(charset => 'none');
-			my $result = $xs->XMLin($answer);
+			$result = $xs->XMLin($answer);
 			print Dumper $result and last if $result->{stat} ne 'ok';
-			$q->enqueue($result->{photos}->{photo});
-			last if $result->{photos}->{page} >= $result->{photos}->{pages};
-		}
-		$q->enqueue(undef); #flag the end of results
-		$processResultT->join();
+			my $photos = $result->{photos}->{photo};
+			foreach (keys %$photos){
+				my $mtags = $photos->{$_}->{'machine_tags'};
+				my @mtags = split /\s+/, $mtags;
+				my %tags = map{split /\s*=\s*/,$_} @mtags;
+				my $id = $tags{'meta:id'} // '';
+				$inFlickr->{$id} = $_;
+			}			
+		}while($result->{photos}->{page} < $result->{photos}->{pages})
 	};
 	warn $@ if $@;
-	return \%result;
+	return $inFlickr;
 }
 sub upload{
 	my ($self,$file,@tags) = @_;
