@@ -133,3 +133,14 @@ sub upload{
 	) or warn "Failed to upload $file" and return undef;
 	return $photoid;
 }
+sub replace{
+	my ($self,$file,$photoid,@tags) = @_;
+	my $new = $uploader->upload(
+		uri => 'http://api.flickr.com/services/replace/',
+		photo => $file,
+		photo_id => $photoid,
+		auth_token => $self->{user}->{auth_token},
+		tags => (join ' ', @tags),
+	) or warn "Failed to replace photo $photoid" and return undef;
+	return $new;
+}
