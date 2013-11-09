@@ -7,10 +7,8 @@ use Browser::Open qw|open_browser|;
 use Flickr::Upload;
 use XML::XPath;
 use XML::Simple;
-use Carp;
-use threads;
-use threads::shared;
-use Thread::Queue;
+use Encode::Locale;
+use Encode;
 
 my $api_key = '470cd47d4fb1e54ac33ff740bc59bef4';
 my $shared_secret = '354288e4575ad352';
@@ -38,8 +36,8 @@ sub askAuth{
 	print 'Get frob...';
 	my $response = $api->execute_method('flickr.auth.getFrob');
 	my $r = $response->decoded_content(charset => 'none');
-	carp qq|Warning in askUser:\n$r| and return undef unless $r =~ /<rsp[^>]+stat\s*=\s*"ok".*>/i;
-	$r =~ /<frob>(.+)<\/frob>/ or carp(qq|Warning:\n$r|) and return undef;
+	warn qq|Warning in askUser:\n$r| and return undef unless $r =~ /<rsp[^>]+stat\s*=\s*"ok".*>/i;
+	$r =~ /<frob>(.+)<\/frob>/ or warn(qq|Warning:\n$r|) and return undef;
 	my $frob = $1;
 	my $url = $api->request_auth_url($permission_wanted,$frob);
 	$url =~ s/&/^&/g if $^O eq 'MSWin32'; #if windows escape & in args of start cmd
@@ -60,9 +58,9 @@ sub getToken{
 	print 'Check answer...';
 	my $r = $response->decoded_content(charset => 'none');
 	print $r;
-	carp qq|Warning:\n$r| and return undef unless $r =~ /<rsp[^>]+stat\s*=\s*"ok".*>/i;
+	warn qq|Warning:\n$r| and return undef unless $r =~ /<rsp[^>]+stat\s*=\s*"ok".*>/i;
 	print 'Extract token...';
-	$r =~ /<token>(.+)<\/token>/ or carp qq|Warning:\n$r| and return undef;
+	$r =~ /<token>(.+)<\/token>/ or warn qq|Warning:\n$r| and return undef;
 	my $token = $1;
 	print 'Save token...';
 	$self->{user}->{auth_token} = $token;
@@ -87,7 +85,7 @@ sub checkFlickrPhoto{
 	my $answer  = $response->decoded_content(charset => 'none');
 	print "answer=$answer";
 	my $xp = XML::XPath->new(xml => $answer);
-	carp qq|Wrong answer:\n\t$answer|
+	warn qq|Wrong answer:\n\t$answer|
 		and return undef if $xp->getNodeText('/rsp/@stat')->value ne 'ok';
 	my $nphotos = $xp->getNodeText('/rsp/photos/@total')->value;
 	return $nphotos;
@@ -107,8 +105,8 @@ sub checkAllFlickrPhotos{
 			  page => $cnt++
 			});
 			my $answer  = $response->decoded_content(charset => 'none');
-			$result = $xs->XMLin($answer);
-			print Dumper $result and last if $result->{stat} ne 'ok';
+			$result = eval{$xs->XMLin($answer);};
+			die "Error getting all flickr photos\n".Dumper($result) if $result->{stat} ne 'ok';
 			my $photos = $result->{photos}->{photo};
 			foreach (keys %$photos){
 				my $mtags = $photos->{$_}->{'machine_tags'};
@@ -124,23 +122,95 @@ sub checkAllFlickrPhotos{
 }
 sub upload{
 	my ($self,$file,@tags) = @_;
-	my $photoid = $uploader->upload(
+	my $photoid = eval {$uploader->upload(
 		photo => $file,
 		auth_token => $self->{user}->{auth_token},
 		tags => (join ' ', @tags),
 		is_public => 0,
 		hidden => 0
-	) or warn "Failed to upload $file" and return undef;
+	)} or warn "Failed to upload $file:\n$@";
 	return $photoid;
 }
 sub replace{
 	my ($self,$file,$photoid,@tags) = @_;
-	my $new = $uploader->upload(
+	my $new = eval{$uploader->upload(
 		uri => 'http://api.flickr.com/services/replace/',
 		photo => $file,
 		photo_id => $photoid,
 		auth_token => $self->{user}->{auth_token},
 		tags => (join ' ', @tags),
-	) or warn "Failed to replace photo $photoid" and return undef;
+	)} or warn "Failed to replace photo $photoid";
 	return $new;
+}
+sub getAllSetsByTitle{
+	my ($self) = @_;
+	my $photosets = {};
+	eval {
+		my $result;
+		my $cnt = 1;
+		do{
+			my $response = $api->execute_method('flickr.photosets.getList', {
+			  user_id => $self->{user}->{nsid},
+			  auth_token => $self->{user}->{auth_token},
+			  per_page => 500,
+			  page => $cnt++
+			});
+			my $answer  = $response->decoded_content(charset => 'none');
+			$result = eval{$xs->XMLin($answer);};
+			die "Error getting the photosets:\n".Dumper($result) if $result->{stat} ne 'ok';
+			push @{$photosets->{$result->{photosets}->{photoset}->{$_}->{title}}}, $_
+			foreach (keys %{$result->{photosets}->{photoset}});	
+		}while($result->{photosets}->{page} < $result->{photosets}->{pages})
+	};
+	warn $@ if $@;
+	return $photosets
+}
+sub createSet{
+	my ($self,$title,$primary_photo_id) = @_;
+	print "Create a new set with name $title"; 
+	my $setID = eval{
+		my $response = $api->execute_method('flickr.photosets.create', {
+		  user_id => $self->{user}->{nsid},
+		  auth_token => $self->{user}->{auth_token},
+		  title  => encode(locale => $title),
+		  primary_photo_id => $primary_photo_id
+		});
+		my $answer  = $response->decoded_content(charset => 'none');
+		my $result = eval {$xs->XMLin($answer);};
+		die "Impossible to create de set $title\n".Dumper($result) if $result->{stat} ne 'ok';;
+		$result->{photoset}->{id};
+	};
+	warn $@ if $@;
+	return $setID;
+}
+sub addPhotos2Set{
+	my ($self,$set,@photos) = @_;
+	my $setID;
+	if (defined $set->{setid}){
+		$setID = $set->{setid};	
+	}else{
+		my $photosets = $self->getAllSetsByTitle();
+		my @gids = map {@{$photosets->{$_}}} grep{$_ eq $set->{name}} keys %$photosets;
+		if (@gids){
+			$setID = $gids[0];	
+		}else{
+			$setID = $self->createSet($set->{name},$photos[0]);
+		}
+	}
+	$self->movePhotos2set($setID,@photos);
+	return $setID;
+}
+sub movePhotos2set{
+	my ($self,$setID,@photos) = @_;
+	foreach(@photos){
+		eval {
+			my $response = $api->execute_method('flickr.photosets.addPhoto', {
+			  user_id => $self->{user}->{nsid},
+			  auth_token => $self->{user}->{auth_token},
+			  photoset_id  => $setID,
+			  photo_id => $_
+			});				
+		};
+		warn $@ if $@;
+	}
 }

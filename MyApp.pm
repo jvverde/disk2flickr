@@ -166,6 +166,7 @@ sub getDirInfo{
 	my ($path) = @_;
 	my $info = openJSON(qq|$path/.d2f.info|) // {};
 	$info->{users} //= {};
+	$info->{flickrset} //= {};
 	return $info;
 }
 sub saveDirInfo{
@@ -179,20 +180,35 @@ my $update_folders = sub{
 	foreach my $folder (@subfolders){
 		my (@steps) = split /\/|\\/, $folder;
 		next if $steps[$#steps] !~ qr/$matching_pattern/i;
-		my $dirInfo = getDirInfo($folder);
-		my $fileInfo = $dirInfo->{users}->{$db->{currentUser}} //= {};
-		my @files = getFiles($folder);
-		foreach (@files){
-			$fileInfo->{$_} //= {};
-			$fileInfo->{$_}->{filename} = $_;
-			$fileInfo->{$_}->{fullpathname} = abs_path qq|$folder/$_|;
-			next unless defined newModificationTime($fileInfo->{$_});	
-			next unless defined newFingerPrint($fileInfo->{$_});
-			$inFlickr //= $flickr->checkAllFlickrPhotos();	#only happens once and only if needed		
-			next unless defined notInFlickr($fileInfo->{$_},$inFlickr);
-			uploadFile($fileInfo->{$_},$inFlickr);
-		}
-		saveDirInfo($folder,$dirInfo);
+		print "Get folder $folder";
+		eval{
+			my $dirInfo = getDirInfo($folder);
+			my $fileInfo = $dirInfo->{users}->{$db->{currentUser}} //= {};
+			my @files = getFiles($folder);
+			my @photos = ();
+			eval {
+				foreach (@files){
+					$fileInfo->{$_} //= {};
+					$fileInfo->{$_}->{filename} = $_;
+					$fileInfo->{$_}->{fullpathname} = abs_path qq|$folder/$_|;
+					next unless defined newModificationTime($fileInfo->{$_});	
+					next unless defined newFingerPrint($fileInfo->{$_});
+					$inFlickr //= $flickr->checkAllFlickrPhotos();	#only happens once and only if needed		
+					next unless defined notInFlickr($fileInfo->{$_},$inFlickr);
+					next unless defined (my $photoid = uploadFile($fileInfo->{$_},$inFlickr));
+					push @photos, $photoid;
+				}
+			};
+			warn "Error uploading files in folder $folder:\n[$@]" if $@;
+			$dirInfo->{flickrset}->{name} //= abs_path $folder;
+			unless (defined $dirInfo->{flickrset}->{setid}){
+				@photos = map{$fileInfo->{$_}->{photoID}} grep{defined $fileInfo->{$_}->{photoID}} @files;
+			}
+			$dirInfo->{flickrset}->{setid} = $flickr->addPhotos2Set($dirInfo->{flickrset},@photos)
+				if @photos;
+			saveDirInfo($folder,$dirInfo);
+		};
+		warn "Error in folder $folder:\n[$@]" if $@;
 	}
 };
 sub newModificationTime{
@@ -227,17 +243,23 @@ sub uploadFile{
 		qq|meta:id="$file->{id}"|,
 	);
 	#print "Prepare to upload $file->{filename}";
-	unless ($file->{photoID}){
-		my $photoid = $flickr->upload($file->{fullpathname},@tags) or return undef;
-		print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
-		$file->{photoID} = $inFlickr->{$file->{id}} = $photoid;
-	}elsif(is_jpeg($file->{fullpathname})){
-		#a older version exist in flickr
-		$flickr->replace($file->{fullpathname},$file->{photoID},@tags) or return undef;	
-		print "File $file->{filename} replaced on flickr (photoid = $file->{photoID})";
-	}else{
-		print "File $file->{filename} is not a valid JPEG file";
-	}
+	my $photoid = eval{
+		unless ($file->{photoID}){
+			my $photoid = $flickr->upload($file->{fullpathname},@tags) or return undef;
+			print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
+			return $file->{photoID} = $inFlickr->{$file->{id}} = $photoid;
+		}elsif(is_jpeg($file->{fullpathname})){
+			#a older version exist in flickr
+			$flickr->replace($file->{fullpathname},$file->{photoID},@tags) or return undef;	
+			print "File $file->{filename} replaced on flickr (photoid = $file->{photoID})";
+			return $file->{photoID};
+		}else{
+			print "File $file->{filename} is not a valid JPEG file";
+			return undef;
+		}
+	};
+	warn "Error uploaginf file $file->{filename}:\n$@" if $@;
+	return $photoid;
 }
 ######################End of my code ######################################
 
@@ -425,7 +447,7 @@ sub go_backup {
 		eval{
 			$update_folders->(@folders);
 		};
-		warn $@ if $@;
+		warn "Error updating folders:[$@]" if $@;
 		$releaseThisThread->();
 		print "End";
 	};
