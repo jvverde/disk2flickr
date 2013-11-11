@@ -7,7 +7,8 @@ use Browser::Open qw|open_browser|;
 use Flickr::Upload;
 use XML::XPath;
 use XML::Simple;
-use Encode::Locale;
+use utf8;
+# use Encode::Locale;
 use Encode;
 
 my $api_key = '470cd47d4fb1e54ac33ff740bc59bef4';
@@ -67,8 +68,8 @@ sub getToken{
 	$r =~ /<user\s+nsid\s*=\s*"([^"]+)"\s+username\s*=\s*"([^"]+)"\s+fullname\s*=\s*"([^"]+)"/
 		or die qq|ERROR:\n$r|;
 	$self->{user}->{nsid} = $1;
-	$self->{user}->{username} = $2;
-	$self->{user}->{fullname} = $3;
+	$self->{user}->{username} = decode('utf8' => $2);
+	$self->{user}->{fullname} = decode('utf8' => $3);
 	return $token;
 }
 
@@ -157,9 +158,11 @@ sub getAllSetsByTitle{
 			});
 			my $answer  = $response->decoded_content(charset => 'none');
 			$result = eval{$xs->XMLin($answer);};
+			#print $answer;
+			#print $result->{photosets}->{photoset}->{$_}->{title} foreach keys %{$result->{photosets}->{photoset}};
 			die "Error getting the photosets:\n".Dumper($result) if $result->{stat} ne 'ok';
 			push @{$photosets->{$result->{photosets}->{photoset}->{$_}->{title}}}, $_
-			foreach (keys %{$result->{photosets}->{photoset}});	
+				foreach (keys %{$result->{photosets}->{photoset}});	
 		}while($result->{photosets}->{page} < $result->{photosets}->{pages})
 	};
 	warn $@ if $@;
@@ -167,17 +170,17 @@ sub getAllSetsByTitle{
 }
 sub createSet{
 	my ($self,$title,$primary_photo_id) = @_;
-	print "Create a new set with name $title"; 
+	print "Create a new set with name $title";
 	my $setID = eval{
 		my $response = $api->execute_method('flickr.photosets.create', {
 		  user_id => $self->{user}->{nsid},
 		  auth_token => $self->{user}->{auth_token},
-		  title  => encode(locale => $title),
+		  title  => $title,
 		  primary_photo_id => $primary_photo_id
 		});
 		my $answer  = $response->decoded_content(charset => 'none');
 		my $result = eval {$xs->XMLin($answer);};
-		die "Impossible to create de set $title\n".Dumper($result) if $result->{stat} ne 'ok';;
+		die "Impossible to create the set $title\n".Dumper($result) if $result->{stat} ne 'ok';;
 		$result->{photoset}->{id};
 	};
 	warn $@ if $@;
@@ -190,11 +193,14 @@ sub addPhotos2Set{
 		$setID = $set->{setid};	
 	}else{
 		my $photosets = $self->getAllSetsByTitle();
-		my @gids = map {@{$photosets->{$_}}} grep{$_ eq $set->{name}} keys %$photosets;
+		my @gids = map {@{$photosets->{$_}}} grep{$_ eq $set->{name}} map {local $,=","; print $_, ' = ', $set->{name};$_} 
+			keys %$photosets;
 		if (@gids){
+			print "Found a set with same name =  $set->{name}";
 			$setID = $gids[0];	
 		}else{
-			$setID = $self->createSet($set->{name},$photos[0]);
+			my $title = encode('utf8' => decode(locale_fs => $set->{name}));
+			$setID = $self->createSet($title,$photos[0]);
 		}
 	}
 	$self->movePhotos2set($setID,@photos);

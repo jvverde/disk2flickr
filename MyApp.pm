@@ -15,7 +15,10 @@ use JSON;
 use Encode::Locale;
 use Encode;
 use Image::JpegCheck;
+use utf8;
 ######################my code ######################################
+binmode STDIN;
+binmode STDOUT;
 
 $\ = "\n";
 
@@ -24,7 +27,8 @@ my $matching_pattern = '.';
 my $home = File::HomeDir->my_home;
 
 my $dbfile = qq|$home/.d2f.conf|;
-my $json  = JSON->new->utf8->pretty;
+#my $json  = JSON->new->utf8->pretty;
+my $json  = JSON->new->pretty;
 #my $json  = JSON->new->utf8;
 sub openJSON{
 	my ($file) = @_;
@@ -33,6 +37,8 @@ sub openJSON{
 	eval{
 		local $/;
 		open my $f, '<:encoding(UTF-8)', "$file" or die "Cannot open $file";
+		#open my $f, '<', "$file" or die "Cannot open $file";
+		#binmode $f;
 		my $json_text   = <$f>;
 		close $f;
 		$result = $json->decode( $json_text );
@@ -44,6 +50,8 @@ sub saveJSON{
 	my ($file,$ref) = @_;
 	eval{
 		open my $f, '>:encoding(UTF-8)', "$file" or die "Cannot open $file";
+		#open my $f, '>', "$file" or die "Cannot open $file";
+		#binmode $f;
 		print $f $json->encode($ref);
 		close $f;
 	};
@@ -81,6 +89,7 @@ my $releaseResourcesT = async{
 	}
 };
 
+
 my $releaseThisThread = sub{ #should be called from a thread which is finishing 
 	lock @finishedThreads;
 	push @finishedThreads, threads->self()->tid();
@@ -103,21 +112,6 @@ my $removeUser = sub{
 	$db->{currentUser} = '';
 	$syncDB->();
 };
-
-my $pendigFiles :shared = 0;
-my $uploadFiles :shared = 0;
-my $uploadFinished :shared = 0;
-
-sub countUploadedFiles{
-	lock $uploadFiles;
-	$uploadFiles++;
-	cond_signal $uploadFiles;
-}
-sub countPendingFiles{
-	lock $pendigFiles;
-	$pendigFiles++;
-	cond_signal $pendigFiles;
-}
 
 $loadUser->();
 
@@ -142,9 +136,6 @@ sub getSubFolders{
 		opendir DIR, $dir or die qq|Wasn't possible to open folder $dir : $!|;
 		my @dirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
 		closedir DIR;
-		# foreach my $subdir (@subdirs){
-			# getFolder(qq|$dir/$subdir|);
-		# }
 		@subdirs = map {getFolders(qq|$dir/$_|)} @dirs; 
 	};
 	warn $@ if $@;
@@ -166,28 +157,52 @@ sub getDirInfo{
 	my ($path) = @_;
 	my $info = openJSON(qq|$path/.d2f.info|) // {};
 	$info->{users} //= {};
-	$info->{flickrset} //= {};
 	return $info;
 }
 sub saveDirInfo{
 	my ($path,$info) = @_; 
 	saveJSON(qq|$path/.d2f.info|,$info);
 }
+
+
+my %filesUploaging :shared = ();
+my %foldersUploaging :shared = ();
+
+sub setUploadedFiles{
+	lock %filesUploaging;
+	$filesUploaging{limit} = shift || 1;
+	cond_signal %filesUploaging;
+}
+sub resetUploadedFiles{
+	lock %filesUploaging;
+	$filesUploaging{uploaded} = 0;;
+	cond_signal %filesUploaging;
+}
+sub incUploadedFiles{
+	lock %filesUploaging;
+	$filesUploaging{uploaded}++;
+	cond_signal %filesUploaging;
+}
 my $update_folders = sub{
-	my @folders = map {encode(locale => $_)} @_;
+	my @folders = map {encode(locale_fs => $_)} @_;
 	my @subfolders = map {getFolders($_)} @folders;
+	
 	my $inFlickr = undef;
-	foreach my $folder (@subfolders){
+	while(my $folder = shift @subfolders){
 		my (@steps) = split /\/|\\/, $folder;
 		next if $steps[$#steps] !~ qr/$matching_pattern/i;
-		print "Get folder $folder";
+		print "Processing folder $folder";
 		eval{
 			my $dirInfo = getDirInfo($folder);
-			my $fileInfo = $dirInfo->{users}->{$db->{currentUser}} //= {};
+			$dirInfo->{users}->{$db->{currentUser}} //= {};
+			my $fileInfo = $dirInfo->{users}->{$db->{currentUser}}->{files} //= {};
 			my @files = getFiles($folder);
+			resetUploadedFiles();
+			setUploadedFiles(scalar @files);
 			my @photos = ();
 			eval {
 				foreach (@files){
+					incUploadedFiles();
 					$fileInfo->{$_} //= {};
 					$fileInfo->{$_}->{filename} = $_;
 					$fileInfo->{$_}->{fullpathname} = abs_path qq|$folder/$_|;
@@ -200,12 +215,18 @@ my $update_folders = sub{
 				}
 			};
 			warn "Error uploading files in folder $folder:\n[$@]" if $@;
-			$dirInfo->{flickrset}->{name} //= abs_path $folder;
-			unless (defined $dirInfo->{flickrset}->{setid}){
-				@photos = map{$fileInfo->{$_}->{photoID}} grep{defined $fileInfo->{$_}->{photoID}} @files;
+			$dirInfo->{users}->{$db->{currentUser}}->{flickrset} //= {};
+			$dirInfo->{users}->{$db->{currentUser}}->{flickrset}->{name} 
+				//= abs_path $folder;
+			unless (defined $dirInfo->{users}->{$db->{currentUser}}->{flickrset}->{setid}){
+				@photos = map{$fileInfo->{$_}->{photoID}} 
+					grep{defined $fileInfo->{$_}->{photoID}} @files;
 			}
-			$dirInfo->{flickrset}->{setid} = $flickr->addPhotos2Set($dirInfo->{flickrset},@photos)
-				if @photos;
+			$dirInfo->{users}->{$db->{currentUser}}->{flickrset}->{setid} 
+				= $flickr->addPhotos2Set(
+					$dirInfo->{users}->{$db->{currentUser}}->{flickrset},
+					@photos
+				) if @photos;
 			saveDirInfo($folder,$dirInfo);
 		};
 		warn "Error in folder $folder:\n[$@]" if $@;
@@ -271,6 +292,8 @@ use strict;
 use Data::Dumper;
 use threads;
 use threads::shared;
+use Encode::Locale;
+use Encode;
 
 ######aux functions#########################
 
@@ -321,7 +344,7 @@ sub __setStatus{
 	my ($self) = @_;
 	if ($db->{currentUser} ne ''){
 		my $name = $db->{users}->{$db->{currentUser}}->{flickr}->{fullname};
-		utf8::decode($name);
+		#utf8::decode($name);
 		$self->SetStatusText(
 		  'User '
 		  .  $name
@@ -408,7 +431,7 @@ sub go_browse {
 	  wxDD_CHANGE_DIR|wxDD_DIR_MUST_EXIST
 	);
 	if ($dlg->ShowModal == wxID_OK){
-		$lastDirectory = $dlg->GetPath();
+		$lastDirectory = $dlg->GetPath() or return;
 		my $p = $self->{foldersList}->GetItemCount;
 		$self->{foldersList}->InsertStringItem($p,$lastDirectory);
 		$db->{users}->{$db->{currentUser}}->{folders}->{$lastDirectory} = time;
@@ -432,7 +455,7 @@ sub go_remove_selected {
 sub go_remove_all {
 	my ($self) = @_;
 	$self->{foldersList}->ClearAll;
-	$db->{users}->{$db->{currentUser}}{folders} =  shared_clone{};
+	$db->{users}->{$db->{currentUser}}{folders} =  {};
 }
 
 sub go_backup {
