@@ -169,7 +169,7 @@ my $update_folders = sub{
 	my @folders = map {encode(locale_fs => $_)} @_;
 	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Selecting folders...');
 	my @subfolders = grep {
-		my (@steps) = split /\/|\\/;
+		my (@steps) = split qr|/|;
 		$steps[$#steps] =~ qr/$matching_pattern/i
 	} map {getFolders(abs_path $_)} @folders;
 	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Sync folders');
