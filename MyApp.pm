@@ -21,7 +21,8 @@ $\ = "\n";
 
 my $flickr = MyFlickr->new();
 my $matching_pattern = '.';
-my $home = File::HomeDir->my_home;
+my $stop :shared = 0;
+my $home = encode( locale => File::HomeDir->my_home);
 
 my $dbfile = qq|$home/.d2f.conf|;
 #my $json  = JSON->new->utf8->pretty;
@@ -46,7 +47,7 @@ sub openJSON{
 sub saveJSON{
 	my ($file,$ref) = @_;
 	eval{
-		open my $f, '>:encoding(UTF-8)', "$file" or die "Cannot open $file";
+		open my $f, '>:encoding(UTF-8)', $file or die "Cannot open $file";
 		#open my $f, '>', "$file" or die "Cannot open $file";
 		#binmode $f;
 		print $f $json->encode($ref);
@@ -165,26 +166,35 @@ sub saveDirInfo{
 
 my $update_folders = sub{
 	my $wnd = shift;
-	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Processing folders...');
 	my @folders = map {encode(locale_fs => $_)} @_;
 	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Selecting folders...');
 	my @subfolders = grep {
 		my (@steps) = split /\/|\\/;
 		$steps[$#steps] =~ qr/$matching_pattern/i
-	} map {getFolders($_)} @folders;
+	} map {getFolders(abs_path $_)} @folders;
+	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Sync folders');
 	my $nfolders = scalar @subfolders;
 	$wnd->{uploadProgressBar}->SetRange($nfolders);
-	#syncProgressPanel
-	my $inFlickr = undef;
-	my $cnt = 0;
+	#my $photosOnFlickr = undef;
+	$wnd->{SyncProgressBarSizer_staticbox}->SetLabel("Sync from Flickr");
+	$wnd->{syncProgressBar}->SetValue(0);
+	my $photosOnFlickr = $flickr->checkAllFlickrPhotos(sub{
+		my ($p,$np) = @_;
+		$wnd->{SyncProgressBarSizer_staticbox}->SetLabel(
+			"Got info about $p of your $np photos currently on Flickr"
+		);
+		$wnd->{syncProgressBar}->SetRange($np);
+		$wnd->{syncProgressBar}->SetValue($p);
+	});
+	$wnd->{SyncProgressBarSizer_staticbox}->SetLabel("");
 	my $retry = 1;
 	while(my $folder = shift @subfolders){
-		#my (@steps) = split /\/|\\/, $folder;
+		last if $stop;
+		my $cnt = $nfolders - scalar @subfolders; 
 		$wnd->{uploadProgressBarSizer_staticbox}->SetLabel(
-			"Uploading folders ($cnt of $nfolders done)"
+			"Sync folders ($cnt of $nfolders)"
 		);
-		$wnd->{uploadProgressBar}->SetValue($cnt++);
-		#next if $steps[$#steps] !~ qr/$matching_pattern/i;
+		$wnd->{uploadProgressBar}->SetValue($cnt);
 		print "Processing folder $folder (${retry}th retry";
 		eval{
 			my $dirInfo = getDirInfo($folder);
@@ -194,21 +204,24 @@ my $update_folders = sub{
 			$wnd->{syncProgressBar}->SetRange(scalar @files);
 			my @photos = ();
 			eval {
-				my $c = 0;
+				my $c = 1;
 				my $nfiles = scalar @files;
 				foreach (@files){
+					last if $stop;
 					$wnd->{SyncProgressBarSizer_staticbox}->SetLabel(
-						"Uploading files ($c of $nfiles done)"
+						"Checking photo $c of $nfiles on folder $folder"
 					);
 					$wnd->{syncProgressBar}->SetValue($c++);
 					$fileInfo->{$_} //= {};
 					$fileInfo->{$_}->{filename} = $_;
-					$fileInfo->{$_}->{fullpathname} = abs_path qq|$folder/$_|;
-					next unless defined newModificationTime($fileInfo->{$_});	
-					next unless defined newFingerPrint($fileInfo->{$_});
-					$inFlickr //= $flickr->checkAllFlickrPhotos();	#only happens once and only if needed		
-					next unless defined notInFlickr($fileInfo->{$_},$inFlickr);
-					next unless defined (my $photoid = uploadFile($fileInfo->{$_},$inFlickr));
+					$fileInfo->{$_}->{fullpathname} = qq|$folder/$_|;
+					#next unless defined newModificationTime($fileInfo->{$_});	
+					#next unless defined newFingerPrint($fileInfo->{$_});
+					newModificationTime($fileInfo->{$_});	
+					newFingerPrint($fileInfo->{$_});
+					#$photosOnFlickr //= $flickr->checkAllFlickrPhotos();	#only happens once and only if needed		
+					next unless defined notInFlickr($fileInfo->{$_},$photosOnFlickr);
+					next unless defined (my $photoid = uploadFile($fileInfo->{$_},$photosOnFlickr));
 					push @photos, $photoid;
 				}
 			};
@@ -471,6 +484,7 @@ sub go_backup {
 	$self->{backupSizer}->Show($self->{uploadProgressPanel},1,1);
 	$self->{backupSizer}->Show($self->{syncProgressPanel},1,1);
 	async{
+		$self->{start_button}->Disable();
 		eval{
 			$update_folders->($self,@folders);
 		};
@@ -479,6 +493,7 @@ sub go_backup {
 		$self->{backupSizer}->Show($self->{uploadProgressPanel},0,1);
 		$self->{backupSizer}->Show($self->{syncProgressPanel},0,1);
 		print "End";
+		$self->{start_button}->Enable(1);
 	};
 }
 

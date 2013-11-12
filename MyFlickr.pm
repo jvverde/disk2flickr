@@ -92,7 +92,7 @@ sub checkFlickrPhoto{
 	return $nphotos;
 }
 sub checkAllFlickrPhotos{
-	my ($self) = @_;
+	my ($self,$callback) = @_;
 	my $inFlickr = {};
 	eval {
 		my $cnt = 1;
@@ -108,6 +108,10 @@ sub checkAllFlickrPhotos{
 			my $answer  = $response->decoded_content(charset => 'none');
 			$result = eval{$xs->XMLin($answer);};
 			die "Error getting all flickr photos\n".Dumper($result) if $result->{stat} ne 'ok';
+			$callback->( #give some feedback about progress
+				$result->{photos}->{page} * $result->{photos}->{perpage}
+				, $result->{photos}->{total}
+			) if defined $callback and ref $callback eq 'CODE';
 			my $photos = $result->{photos}->{photo};
 			foreach (keys %$photos){
 				my $mtags = $photos->{$_}->{'machine_tags'};
