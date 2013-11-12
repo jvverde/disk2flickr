@@ -8,7 +8,7 @@ use Flickr::Upload;
 use XML::XPath;
 use XML::Simple;
 use utf8;
-# use Encode::Locale;
+#use Encode::Locale;
 use Encode;
 
 my $api_key = '470cd47d4fb1e54ac33ff740bc59bef4';
@@ -148,19 +148,21 @@ sub getAllSetsByTitle{
 	my $photosets = {};
 	eval {
 		my $result;
-		my $cnt = 1;
+		my $page = 1;
 		do{
 			my $response = $api->execute_method('flickr.photosets.getList', {
 			  user_id => $self->{user}->{nsid},
 			  auth_token => $self->{user}->{auth_token},
 			  per_page => 500,
-			  page => $cnt++
+			  page => $page++
 			});
 			my $answer  = $response->decoded_content(charset => 'none');
 			$result = eval{$xs->XMLin($answer);};
-			#print $answer;
-			#print $result->{photosets}->{photoset}->{$_}->{title} foreach keys %{$result->{photosets}->{photoset}};
-			die "Error getting the photosets:\n".Dumper($result) if $result->{stat} ne 'ok';
+			warn "Error getting the photosets:\n".Dumper($result) if $result->{stat} ne 'ok';
+			return undef unless $result->{photosets}->{total} > 0;
+			return $photosets->{$result->{photosets}->{photoset}->{title}} = [
+				$result->{photosets}->{photoset}
+			] if 1 == $result->{photosets}->{total};
 			push @{$photosets->{$result->{photosets}->{photoset}->{$_}->{title}}}, $_
 				foreach (keys %{$result->{photosets}->{photoset}});	
 		}while($result->{photosets}->{page} < $result->{photosets}->{pages})
@@ -183,7 +185,7 @@ sub createSet{
 		die "Impossible to create the set $title\n".Dumper($result) if $result->{stat} ne 'ok';;
 		$result->{photoset}->{id};
 	};
-	warn $@ if $@;
+	die "Warn at createSet:\n<$@>" if $@;
 	return $setID;
 }
 sub addPhotos2Set{
@@ -199,11 +201,11 @@ sub addPhotos2Set{
 			print "Found a set with same name =  $set->{name}";
 			$setID = $gids[0];	
 		}else{
-			my $title = encode('utf8' => decode(locale_fs => $set->{name}));
+			my $title = encode('UTF-8' => $set->{name});
 			$setID = $self->createSet($title,$photos[0]);
 		}
 	}
-	$self->movePhotos2set($setID,@photos);
+	$self->movePhotos2set($setID,@photos) if defined $setID;
 	return $setID;
 }
 sub movePhotos2set{

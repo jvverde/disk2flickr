@@ -4,6 +4,7 @@
 #
 use Wx 0.15 qw[:allclasses];
 use strict;
+use warnings qw(all);
 use MyFlickr;
 use Digest::SHA qw(sha256);
 use File::HomeDir;
@@ -12,14 +13,14 @@ use threads;
 use threads::shared;
 use Data::Dumper;
 use JSON;
-use Encode::Locale;
-use Encode;
 use Image::JpegCheck;
 use utf8;
+use Encode::Locale;
+use Encode;
 ######################my code ######################################
-binmode STDIN;
-binmode STDOUT;
-
+#use open qw|:locale|;
+#binmode STDOUT, ':encoding(console_out)';
+#binmode STDOUT, ':encoding(locale)';
 $\ = "\n";
 
 my $flickr = MyFlickr->new();
@@ -56,6 +57,7 @@ sub saveJSON{
 		close $f;
 	};
 	warn $@ if $@;
+	return 1;
 }
 
 sub openDB{
@@ -165,31 +167,19 @@ sub saveDirInfo{
 }
 
 
-my %filesUploaging :shared = ();
-my %foldersUploaging :shared = ();
-
-sub setUploadedFiles{
-	lock %filesUploaging;
-	$filesUploaging{limit} = shift || 1;
-	cond_signal %filesUploaging;
-}
-sub resetUploadedFiles{
-	lock %filesUploaging;
-	$filesUploaging{uploaded} = 0;;
-	cond_signal %filesUploaging;
-}
-sub incUploadedFiles{
-	lock %filesUploaging;
-	$filesUploaging{uploaded}++;
-	cond_signal %filesUploaging;
-}
 my $update_folders = sub{
+	my $wnd = shift;
 	my @folders = map {encode(locale_fs => $_)} @_;
 	my @subfolders = map {getFolders($_)} @folders;
-	
+	$wnd->{uploadProgressBar}->SetRange(scalar @subfolders);
+	#syncProgressPanel
 	my $inFlickr = undef;
+	my $cnt = 1;
+	my $retry = 0;
 	while(my $folder = shift @subfolders){
+		print "Retry = $retry";
 		my (@steps) = split /\/|\\/, $folder;
+		$wnd->{uploadProgressBar}->SetValue($cnt++);
 		next if $steps[$#steps] !~ qr/$matching_pattern/i;
 		print "Processing folder $folder";
 		eval{
@@ -197,12 +187,12 @@ my $update_folders = sub{
 			$dirInfo->{users}->{$db->{currentUser}} //= {};
 			my $fileInfo = $dirInfo->{users}->{$db->{currentUser}}->{files} //= {};
 			my @files = getFiles($folder);
-			resetUploadedFiles();
-			setUploadedFiles(scalar @files);
+			$wnd->{syncProgressBar}->SetRange(scalar @files);
 			my @photos = ();
 			eval {
+				my $c = 1;
 				foreach (@files){
-					incUploadedFiles();
+					$wnd->{syncProgressBar}->SetValue($c++);
 					$fileInfo->{$_} //= {};
 					$fileInfo->{$_}->{filename} = $_;
 					$fileInfo->{$_}->{fullpathname} = abs_path qq|$folder/$_|;
@@ -215,9 +205,11 @@ my $update_folders = sub{
 				}
 			};
 			warn "Error uploading files in folder $folder:\n[$@]" if $@;
+			saveDirInfo($folder,$dirInfo);
+			$dirInfo = getDirInfo($folder);
 			$dirInfo->{users}->{$db->{currentUser}}->{flickrset} //= {};
 			$dirInfo->{users}->{$db->{currentUser}}->{flickrset}->{name} 
-				//= abs_path $folder;
+				//= decode(locale => abs_path $folder);		
 			unless (defined $dirInfo->{users}->{$db->{currentUser}}->{flickrset}->{setid}){
 				@photos = map{$fileInfo->{$_}->{photoID}} 
 					grep{defined $fileInfo->{$_}->{photoID}} @files;
@@ -229,7 +221,9 @@ my $update_folders = sub{
 				) if @photos;
 			saveDirInfo($folder,$dirInfo);
 		};
-		warn "Error in folder $folder:\n[$@]" if $@;
+		#This is a workaround
+		warn "Error in folder $folder:\n[$@]" and redo if $@ and $retry++ < 10;
+		$retry = 0;
 	}
 };
 sub newModificationTime{
@@ -344,7 +338,6 @@ sub __setStatus{
 	my ($self) = @_;
 	if ($db->{currentUser} ne ''){
 		my $name = $db->{users}->{$db->{currentUser}}->{flickr}->{fullname};
-		#utf8::decode($name);
 		$self->SetStatusText(
 		  'User '
 		  .  $name
@@ -403,8 +396,10 @@ sub new {
 	$self->__setStatus();
 	$self->{uploadProgressBar}->SetRange(100);
 	$self->{uploadProgressBar}->SetValue(0);
-	$self->{syncProgressPanel}->Hide();
-	$self->{uploadProgressPanel}->Hide();
+	#$self->{syncProgressPanel}->Hide();
+	#$self->{uploadProgressPanel}->Hide();
+	$self->{backupSizer}->Show($self->{syncProgressPanel},0,1);
+	$self->{backupSizer}->Show($self->{uploadProgressPanel},0,1);
 	return $self;
 }
 
@@ -466,12 +461,16 @@ sub go_backup {
 	}
 	my $count = $self->{foldersList}->GetItemCount;
 	my @folders = map {$self->{foldersList}->GetItemText($_)} (0..$count-1);
+	$self->{backupSizer}->Show($self->{uploadProgressPanel},1,1);
+	$self->{backupSizer}->Show($self->{syncProgressPanel},1,1);
 	async{
 		eval{
-			$update_folders->(@folders);
+			$update_folders->($self,@folders);
 		};
 		warn "Error updating folders:[$@]" if $@;
 		$releaseThisThread->();
+		$self->{backupSizer}->Show($self->{uploadProgressPanel},0,1);
+		$self->{backupSizer}->Show($self->{syncProgressPanel},0,1);
 		print "End";
 	};
 }
