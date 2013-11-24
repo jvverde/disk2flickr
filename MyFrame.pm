@@ -246,8 +246,7 @@ sub do_logout {
 
 sub do_exit {
     my ($self, $event) = @_;
-	$self->go_exit;
-	return $event->Skip;
+	return $self->go_exit;
     # wxGlade: MyFrame::do_exit <event_handler>
     warn "Event handler (do_exit) not implemented";
     $event->Skip;

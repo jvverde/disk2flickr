@@ -11,8 +11,8 @@ use utf8;
 #use Encode::Locale;
 use Encode;
 
-my $api_key = '470cd47d4fb1e54ac33ff740bc59bef4';
-my $shared_secret = '354288e4575ad352';
+my $api_key = 'c17dfef7e22e88fea9e4f262ffbed050';
+my $shared_secret = 'b6594d9e991af066';
 
 my $api = new Flickr::API({
 	key => $api_key,
@@ -93,7 +93,7 @@ sub checkFlickrPhoto{
 }
 sub checkAllFlickrPhotos{
 	my ($self,$callback) = @_;
-	my $inFlickr = {};
+	my $inFlickr = {byID => {}, byPhotoID => {}};
 	eval {
 		my $cnt = 1;
 		my $result;
@@ -118,7 +118,7 @@ sub checkAllFlickrPhotos{
 				my @mtags = split /\s+/, $mtags;
 				my %tags = map{split /\s*=\s*/,$_} @mtags;
 				my $id = $tags{'meta:id'} // '';
-				$inFlickr->{$id} = $_;
+				$inFlickr->{byID}->{$id} = $inFlickr->{byPhotoID}->{$_} = $_;
 			}			
 		}while($result->{photos}->{page} < $result->{photos}->{pages})
 	};
@@ -196,6 +196,7 @@ sub addPhotos2Set{
 	my ($self,$set,@photos) = @_;
 	my $setID;
 	if (defined $set->{setid}){
+	#we must test if it exists
 		$setID = $set->{setid};	
 	}else{
 		my $photosets = $self->getAllSetsByTitle();

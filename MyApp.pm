@@ -67,7 +67,7 @@ my $db = openDB($dbfile);
 $flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr} // {}
 	if $db->{currentUser} and defined $db->{users}->{$db->{currentUser}};
 
-print Dumper $db;
+#print Dumper $db;
 
 my $syncDB = sub{
 	saveJSON($dbfile,$db);
@@ -125,17 +125,20 @@ sub computeFileID{
 
 sub getFolders{
 	my $dir = shift or return ();
-	return ($dir, getSubFolders($dir));
+	return ($dir, getSubFolders($dir,shift));
 }
 
 sub getSubFolders{
 	my $dir = shift;
+	my $callback = shift || sub{};
 	my @subdirs = ();
 	eval{
 		opendir DIR, $dir or die qq|Wasn't possible to open folder $dir : $!|;
 		my @dirs = grep {-d qq|$dir/$_| and $_ ne '.' and $_ ne '..'} readdir DIR;
 		closedir DIR;
-		@subdirs = map {getFolders(qq|$dir/$_|)} @dirs; 
+		$callback->({up => scalar @dirs});
+		@subdirs = map {getFolders(qq|$dir/$_|,$callback)} @dirs; 
+		$callback->({down => scalar @dirs});
 	};
 	warn $@ if $@;
 	return @subdirs;
@@ -167,11 +170,28 @@ sub saveDirInfo{
 my $update_folders = sub{
 	my $wnd = shift;
 	my @folders = map {encode(locale_fs => $_)} @_;
-	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Selecting folders...');
+	my $prog = do{
+		my $max = 0;
+		my $current = 0;
+		$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Selecting folders...');
+		sub{
+			my $action = shift;
+			if (defined $action->{up}){
+				$max += $action->{up};
+				$wnd->{uploadProgressBar}->SetRange($max);
+			}elsif(defined $action->{down}){
+				$current += $action->{down};
+				$wnd->{uploadProgressBar}->SetValue($current);			
+			}
+			$wnd->{uploadProgressBarSizer_staticbox}->SetLabel(
+				"Selecting folders ($current of $max)"
+			);
+		};
+	};
 	my @subfolders = grep {
 		my (@steps) = split qr|/|;
 		$steps[$#steps] =~ qr/$matching_pattern/i
-	} map {getFolders(abs_path $_)} @folders;
+	} map {getFolders(abs_path($_),$prog)} @folders;
 	$wnd->{uploadProgressBarSizer_staticbox}->SetLabel('Sync folders');
 	my $nfolders = scalar @subfolders;
 	$wnd->{uploadProgressBar}->SetRange($nfolders);
@@ -220,9 +240,9 @@ my $update_folders = sub{
 					newModificationTime($fileInfo->{$_});	
 					newFingerPrint($fileInfo->{$_});
 					#$photosOnFlickr //= $flickr->checkAllFlickrPhotos();	#only happens once and only if needed		
-					next unless defined notInFlickr($fileInfo->{$_},$photosOnFlickr);
-					next unless defined (my $photoid = uploadFile($fileInfo->{$_},$photosOnFlickr));
-					push @photos, $photoid;
+					next unless defined notInFlickr($fileInfo->{$_},$photosOnFlickr->{byID});
+					my $photoid = uploadFile($fileInfo->{$_},$photosOnFlickr);
+					push @photos, $photoid if defined $photoid;
 				}
 			};
 			warn "Error uploading files in folder $folder:\n[$@]" if $@;
@@ -279,10 +299,13 @@ sub uploadFile{
 	);
 	#print "Prepare to upload $file->{filename}";
 	my $photoid = eval{
-		unless ($file->{photoID}){
+		unless(defined $file->{photoID} and exists $inFlickr->{byPhotoID}->{$file->{photoID}}){
 			my $photoid = $flickr->upload($file->{fullpathname},@tags) or return undef;
 			print "File $file->{filename} uploaded to flickr (photoid = $photoid)";
-			return $file->{photoID} = $inFlickr->{$file->{id}} = $photoid;
+			return $file->{photoID} 
+				= $inFlickr->{byID}->{$file->{id}}
+				= $inFlickr->{byPhotoID}->{$photoid}	
+				= $photoid;
 		}elsif(is_jpeg($file->{fullpathname})){
 			#a older version exist in flickr
 			$flickr->replace($file->{fullpathname},$file->{photoID},@tags) or return undef;	
@@ -391,17 +414,60 @@ sub __setUserOptions{
 }
 
 ###############################
-
+use constant ID_QUIT => Wx::NewId();
+use constant ID_SHOW => Wx::NewId();
 sub new {
     my( $self) = @_;
 	$self = $self->SUPER::new();
+	
+	my $icon = Wx::Icon->new('d2f.ico',wxBITMAP_TYPE_ICO) if -f 'd2f.ico';
+	$self->SetIcon($icon) if defined $icon;
 
+	# Create the TaskBarIcon	
+	$self->{tbi} = Wx::TaskBarIcon->new();
+	$self->{tbi}->SetIcon(($icon // Wx::GetWxPerlIcon),'Disk2Flickr');
+	#$self->{tbi}->SetIcon(Wx::GetWxPerlIcon, "Disk2Flickr");
+	# Create the TaskBarMenu
+	$self->{taskbarmenu} = Wx::Menu->new( "Disk2Flickr" );
+	$self->{taskbarmenu}->Append( ID_QUIT, "Exit" );
+	$self->{taskbarmenu}->Append( ID_SHOW, "Show" );
+	
+	Wx::Event::EVT_TASKBAR_LEFT_DOWN( $self->{tbi}, sub {
+		$self->Show(1);
+	});
+	Wx::Event::EVT_TASKBAR_RIGHT_DOWN( $self->{tbi}, sub {
+		my( $this, $event ) = @_;
+		$this->PopupMenu( $self->{taskbarmenu} );
+	});
+	Wx::Event::EVT_MENU( $self->{tbi}, ID_QUIT, sub {
+		my( $this, $event ) = @_;
+		print "Close from systray";
+		$self->go_exit();
+		#$self->OnClose();
+	} );
+	Wx::Event::EVT_MENU( $self->{tbi}, ID_SHOW, sub {
+		my( $this, $event ) = @_;
+		print "show from systray";
+		$self->Show(1);
+		$event->Skip;
+		#$self->OnClose();
+	});
+		
 	$self->SetSize(Wx::Size->new(550, 450));
+	
 	Wx::Event::EVT_CLOSE($self,sub{
-			my ($self, $event) = @_;
-			$syncDB->();
-			print "Goodby";
-			$event->Skip;
+		my ($self, $event) = @_;
+		$syncDB->();
+		print "Goodby";
+		$self->Hide();
+		#$event->Skip;
+	});
+	Wx::Event::EVT_ICONIZE($self,sub{
+		my ($self, $event) = @_;
+		$syncDB->();
+		print "Minimize";
+		$self->Hide();
+		#$event->Skip;		
 	});
 
 	if($db->{currentUser} ne ''
@@ -416,11 +482,20 @@ sub new {
 	$self->__setStatus();
 	$self->{uploadProgressBar}->SetRange(100);
 	$self->{uploadProgressBar}->SetValue(0);
-	#$self->{syncProgressPanel}->Hide();
-	#$self->{uploadProgressPanel}->Hide();
 	$self->{backupSizer}->Show($self->{syncProgressPanel},0,1);
 	$self->{backupSizer}->Show($self->{uploadProgressPanel},0,1);
 	return $self;
+}
+sub go_exit {
+	my ($self) = @_;
+	$syncDB->();
+	$self->{tbi}->Destroy();
+	$self->Destroy();
+}
+
+sub go_close {
+	my ($self) = @_;
+	$self->Close;
 }
 
 sub go_login {
@@ -497,15 +572,6 @@ sub go_backup {
 	};
 }
 
-sub go_exit {
-	my ($self) = @_;
-	$self->Close;
-}
-
-sub go_close {
-	my ($self) = @_;
-	$self->Close;
-}
 
 sub go_main {
 	my ($self) = @_;

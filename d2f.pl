@@ -17,6 +17,8 @@ package D2F;
 use base qw(Wx::App);
 use strict;
 
+open STDOUT, ">log.txt";
+
 use MyApp;
 
 sub OnInit {
