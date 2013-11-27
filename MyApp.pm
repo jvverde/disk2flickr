@@ -13,6 +13,7 @@ use Image::JpegCheck;
 use utf8;
 use Encode::Locale;
 use Encode;
+#use File::Temp qw/ tempfile tempdir /;
 ######################my code ######################################
 #use open qw|:locale|;
 #binmode STDOUT, ':encoding(console_out)';
@@ -22,21 +23,30 @@ $\ = "\n";
 my $flickr = MyFlickr->new();
 my $matching_pattern = '.';
 my $stop :shared = 0;
-my $home = encode( locale => File::HomeDir->my_home);
+my $home = encode(locale_fs => File::HomeDir->my_home);
+
+unless (-d $home){
+	-d '/tmp' or mkdir '/tmp';
+	$home = '/tmp';
+}
+print "home=$home";
+#my $dir = tempdir( CLEANUP => 0);
+ 
+
+#open STDOUT, ">$home/d2f.log";
+#$| = 1;
 
 my $dbfile = qq|$home/.d2f.conf|;
 #my $json  = JSON->new->utf8->pretty;
 my $json  = JSON->new->pretty;
-#my $json  = JSON->new->utf8;
 sub openJSON{
 	my ($file) = @_;
 	return undef unless -r $file;
 	my $result = undef;
 	eval{
 		local $/;
-		open my $f, '<:encoding(UTF-8)', "$file" or die "Cannot open $file";
-		#open my $f, '<', "$file" or die "Cannot open $file";
-		#binmode $f;
+		open my $f, '<:encoding(UTF-8)', $file or die "Cannot open $file\n$!";
+		flock($f, 1) or die "Cannot shared lock the $file\n$!";
 		my $json_text   = <$f>;
 		close $f;
 		$result = $json->decode( $json_text );
@@ -47,9 +57,8 @@ sub openJSON{
 sub saveJSON{
 	my ($file,$ref) = @_;
 	eval{
-		open my $f, '>:encoding(UTF-8)', $file or die "Cannot open $file";
-		#open my $f, '>', "$file" or die "Cannot open $file";
-		#binmode $f;
+		open my $f, '>:encoding(UTF-8)', $file or die "Cannot open $file\n$!";
+		flock($f, 2) or die "Cannot lock the $file\n$!";
 		print $f $json->encode($ref);
 		close $f;
 	};
@@ -62,6 +71,7 @@ sub openDB{
   my $result = openJSON($file) // {users => {}};
   return $result;
 }
+
 my $db = openDB($dbfile);
 
 $flickr->{user} = $db->{users}->{$db->{currentUser}}->{flickr} // {}

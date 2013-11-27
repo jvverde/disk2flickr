@@ -5,7 +5,6 @@ use Flickr::API;
 use Data::Dumper;
 use Browser::Open qw|open_browser|;
 use Flickr::Upload;
-use XML::XPath;
 use XML::Simple;
 use utf8;
 #use Encode::Locale;
@@ -73,24 +72,6 @@ sub getToken{
 	return $token;
 }
 
-sub checkFlickrPhoto{
-	my ($self,$id) = @_;
-	#print "Check photo $id";
-	my $param = {
-	  user_id => $self->{user}->{nsid},
-	  auth_token => $self->{user}->{auth_token},
-	  tags => qq|$id|
-	};
-	print Dumper $param;
-	my $response = $api->execute_method('flickr.photos.search', $param);
-	my $answer  = $response->decoded_content(charset => 'none');
-	print "answer=$answer";
-	my $xp = XML::XPath->new(xml => $answer);
-	warn qq|Wrong answer:\n\t$answer|
-		and return undef if $xp->getNodeText('/rsp/@stat')->value ne 'ok';
-	my $nphotos = $xp->getNodeText('/rsp/photos/@total')->value;
-	return $nphotos;
-}
 sub checkAllFlickrPhotos{
 	my ($self,$callback) = @_;
 	my $inFlickr = {byID => {}, byPhotoID => {}};
@@ -106,7 +87,7 @@ sub checkAllFlickrPhotos{
 			  page => $cnt++
 			});
 			my $answer  = $response->decoded_content(charset => 'none');
-			$result = eval{$xs->XMLin($answer);};
+			$result = eval{$xs->XMLin($answer);} or die $@;
 			die "Error getting all flickr photos\n".Dumper($result) if $result->{stat} ne 'ok';
 			$callback->( #give some feedback about progress
 				$result->{photos}->{page} * $result->{photos}->{perpage}
